@@ -1,0 +1,314 @@
+techniques:
+  T1055:
+    name: "Process Injection"
+    tactic: "Defense Evasion"
+    description: "Adversaries may inject code into processes to evade process-based defenses and elevate privileges"
+    data_sources:
+      - "Process: OS API Execution"
+      - "Process: Process Modification"
+    indicators:
+      - malfind_rwx
+      - hollow_process
+      - dll_injection
+      - remote_thread
+    recommendations:
+      - "Analyze injected memory regions"
+      - "Dump suspicious process memory for further analysis"
+      - "Check for known injection signatures"
+      - "Review process hollowing indicators"
+
+  T1055.001:
+    name: "Dynamic-link Library Injection"
+    tactic: "Defense Evasion"
+    description: "Adversaries may inject DLLs into processes to execute arbitrary code"
+    data_sources:
+      - "Module: Module Load"
+      - "Process: OS API Execution"
+    indicators:
+      - suspicious_dll_load
+      - ldrmodules_unlinked
+      - unknown_dll_path
+    recommendations:
+      - "Review loaded DLLs for anomalies"
+      - "Check DLL paths against known-good locations"
+      - "Verify DLL digital signatures"
+
+  T1055.012:
+    name: "Process Hollowing"
+    tactic: "Defense Evasion"
+    description: "Adversaries may inject malicious code into suspended and hollowed processes"
+    data_sources:
+      - "Process: Process Modification"
+    indicators:
+      - hollow_process
+      - unmapped_code
+      - suspended_thread
+    recommendations:
+      - "Check for hollowed processes using memory forensics"
+      - "Compare process image to disk image"
+      - "Review process creation patterns"
+
+  T1059:
+    name: "Command and Scripting Interpreter"
+    tactic: "Execution"
+    description: "Adversaries may abuse command and script interpreters to execute commands"
+    data_sources:
+      - "Command: Command Execution"
+      - "Process: Process Creation"
+    indicators:
+      - suspicious_cmdline
+      - script_execution
+      - interpreter_spawn
+    recommendations:
+      - "Review command line arguments for all processes"
+      - "Check for encoded or obfuscated commands"
+      - "Analyze script contents"
+
+  T1059.001:
+    name: "PowerShell"
+    tactic: "Execution"
+    description: "Adversaries may abuse PowerShell for execution"
+    data_sources:
+      - "Command: Command Execution"
+      - "Script: Script Execution"
+    indicators:
+      - encoded_powershell
+      - hidden_window
+      - bypass_policy
+      - download_cradle
+    recommendations:
+      - "Decode base64 encoded commands"
+      - "Check PowerShell event logs"
+      - "Review script block logging"
+      - "Analyze download cradle patterns"
+
+  T1059.003:
+    name: "Windows Command Shell"
+    tactic: "Execution"
+    description: "Adversaries may abuse cmd.exe for execution"
+    data_sources:
+      - "Command: Command Execution"
+      - "Process: Process Creation"
+    indicators:
+      - cmd_execution
+      - batch_script
+    recommendations:
+      - "Review cmd.exe command lines"
+      - "Check for suspicious batch scripts"
+      - "Monitor child processes of cmd.exe"
+
+  T1059.004:
+    name: "Unix Shell"
+    tactic: "Execution"
+    description: "Adversaries may abuse Unix shell commands for execution"
+    data_sources:
+      - "Command: Command Execution"
+      - "Process: Process Creation"
+    indicators:
+      - bash_reverse_shell
+      - curl_wget_execution
+      - netcat_shell
+    recommendations:
+      - "Review bash history from memory"
+      - "Check for reverse shell patterns"
+      - "Analyze cron jobs and startup scripts"
+
+  T1071:
+    name: "Application Layer Protocol"
+    tactic: "Command and Control"
+    description: "Adversaries may communicate using application layer protocols"
+    data_sources:
+      - "Network Traffic: Network Connection Creation"
+      - "Network Traffic: Network Traffic Content"
+    indicators:
+      - suspicious_network
+      - c2_connection
+      - unusual_port
+    recommendations:
+      - "Block identified C2 IP addresses"
+      - "Analyze network traffic patterns"
+      - "Check for beaconing behavior"
+
+  T1071.001:
+    name: "Web Protocols"
+    tactic: "Command and Control"
+    description: "Adversaries may communicate using HTTP/HTTPS"
+    data_sources:
+      - "Network Traffic: Network Traffic Content"
+    indicators:
+      - http_c2
+      - suspicious_user_agent
+      - unusual_http_method
+    recommendations:
+      - "Review HTTP/HTTPS traffic logs"
+      - "Check for unusual domains"
+      - "Analyze SSL/TLS certificates"
+
+  T1105:
+    name: "Ingress Tool Transfer"
+    tactic: "Command and Control"
+    description: "Adversaries may transfer tools from external systems"
+    data_sources:
+      - "Network Traffic: Network Traffic Content"
+      - "File: File Creation"
+    indicators:
+      - certutil_download
+      - bitsadmin_download
+      - powershell_download
+      - wget_curl_download
+    recommendations:
+      - "Block download URLs at proxy"
+      - "Check downloaded file hashes"
+      - "Review download locations"
+
+  T1547.001:
+    name: "Registry Run Keys / Startup Folder"
+    tactic: "Persistence"
+    description: "Adversaries may achieve persistence via Registry Run keys or startup folders"
+    data_sources:
+      - "Windows Registry: Windows Registry Key Creation"
+      - "Windows Registry: Windows Registry Key Modification"
+    indicators:
+      - run_key_modification
+      - startup_folder_modification
+    recommendations:
+      - "Review all Run key entries"
+      - "Check startup folder contents"
+      - "Compare against known-good baseline"
+
+  T1053.005:
+    name: "Scheduled Task"
+    tactic: "Persistence"
+    description: "Adversaries may abuse scheduled tasks for persistence"
+    data_sources:
+      - "Scheduled Job: Scheduled Job Creation"
+    indicators:
+      - scheduled_task_creation
+      - suspicious_task_action
+    recommendations:
+      - "Review all scheduled tasks"
+      - "Check task actions and triggers"
+      - "Compare against baseline"
+
+  T1543.003:
+    name: "Windows Service"
+    tactic: "Persistence"
+    description: "Adversaries may create services for persistence"
+    data_sources:
+      - "Service: Service Creation"
+      - "Service: Service Modification"
+    indicators:
+      - service_creation
+      - service_modification
+      - suspicious_service_binary
+    recommendations:
+      - "Review newly created services"
+      - "Check service binary paths"
+      - "Validate service configurations"
+
+  T1505.003:
+    name: "Web Shell"
+    tactic: "Persistence"
+    description: "Adversaries may install web shells on web servers"
+    data_sources:
+      - "Process: Process Creation"
+      - "File: File Creation"
+    indicators:
+      - webshell_process
+      - web_server_spawns_shell
+      - suspicious_web_file
+    recommendations:
+      - "Review web server directories"
+      - "Check for new or modified files"
+      - "Analyze web server access logs"
+
+  T1036:
+    name: "Masquerading"
+    tactic: "Defense Evasion"
+    description: "Adversaries may masquerade as legitimate files or processes"
+    data_sources:
+      - "File: File Metadata"
+      - "Process: Process Metadata"
+    indicators:
+      - process_path_mismatch
+      - name_spoofing
+      - extension_spoofing
+    recommendations:
+      - "Verify process paths match expected locations"
+      - "Check digital signatures"
+      - "Compare file hashes against known-good"
+
+  T1218.010:
+    name: "Regsvr32"
+    tactic: "Defense Evasion"
+    description: "Adversaries may abuse Regsvr32 to proxy execution"
+    data_sources:
+      - "Process: Process Creation"
+      - "Module: Module Load"
+    indicators:
+      - regsvr32_scriptlet
+      - regsvr32_remote
+    recommendations:
+      - "Review Regsvr32 executions"
+      - "Block scriptlet execution"
+      - "Monitor COM object registration"
+
+  T1218.005:
+    name: "Mshta"
+    tactic: "Defense Evasion"
+    description: "Adversaries may abuse mshta.exe for execution"
+    data_sources:
+      - "Process: Process Creation"
+    indicators:
+      - mshta_execution
+      - hta_script
+    recommendations:
+      - "Review mshta.exe usage"
+      - "Block HTA file execution"
+      - "Monitor script execution"
+
+  T1218.011:
+    name: "Rundll32"
+    tactic: "Defense Evasion"
+    description: "Adversaries may abuse rundll32.exe for execution"
+    data_sources:
+      - "Process: Process Creation"
+      - "Module: Module Load"
+    indicators:
+      - rundll32_javascript
+      - rundll32_unusual_dll
+    recommendations:
+      - "Review rundll32.exe command lines"
+      - "Check for unusual DLL loading"
+      - "Monitor script execution via rundll32"
+
+  T1047:
+    name: "Windows Management Instrumentation"
+    tactic: "Execution"
+    description: "Adversaries may abuse WMI for execution"
+    data_sources:
+      - "Process: Process Creation"
+      - "WMI: WMI Creation"
+    indicators:
+      - wmi_execution
+      - wmiprvse_spawns_process
+      - wmi_subscription
+    recommendations:
+      - "Review WMI subscriptions"
+      - "Check WMI activity logs"
+      - "Monitor wmiprvse.exe children"
+
+  T1027:
+    name: "Obfuscated Files or Information"
+    tactic: "Defense Evasion"
+    description: "Adversaries may obfuscate payloads"
+    data_sources:
+      - "File: File Metadata"
+    indicators:
+      - encoded_content
+      - packed_executable
+      - obfuscated_script
+    recommendations:
+      - "Decode obfuscated content"
+      - "Unpack packed executables"
+      - "Use deobfuscation tools"

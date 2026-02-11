@@ -1,0 +1,402 @@
+malware_detection:
+  windows:
+    plugins:
+      - name: windows.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.pstree
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.psscan
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.malware.malfind
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.malware.hollowprocesses
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.cmdline
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.dlllist
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.handles
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.filescan
+        args: {}
+        priority: 3
+        required: false
+    estimated_minutes: 10
+    description: "Detect malware indicators including injection, suspicious processes, and C2"
+
+  linux:
+    plugins:
+      - name: linux.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.pstree
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.psscan
+        args: {}
+        priority: 2
+        required: false
+      - name: linux.malware.malfind
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.malware.check_syscall
+        args: {}
+        priority: 2
+        required: false
+      - name: linux.bash
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.lsof
+        args: {}
+        priority: 2
+        required: false
+      - name: linux.sockstat
+        args: {}
+        priority: 2
+        required: false
+    estimated_minutes: 12
+    description: "Detect malware on Linux including rootkits and webshells"
+
+incident_response:
+  windows:
+    plugins:
+      - name: windows.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.pstree
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.cmdline
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.handles
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.filescan
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.registry.hivelist
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.registry.userassist
+        args: {}
+        priority: 3
+        required: false
+      - name: windows.svcscan
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.registry.scheduled_tasks
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.envars
+        args: {}
+        priority: 3
+        required: false
+    estimated_minutes: 18
+    description: "Collect artifacts for incident response timeline"
+
+  linux:
+    plugins:
+      - name: linux.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.pstree
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.bash
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.lsof
+        args: {}
+        priority: 2
+        required: true
+      - name: linux.sockstat
+        args: {}
+        priority: 2
+        required: true
+      - name: linux.lsmod
+        args: {}
+        priority: 2
+        required: false
+      - name: linux.envars
+        args: {}
+        priority: 3
+        required: false
+    estimated_minutes: 15
+    description: "Collect Linux IR artifacts"
+
+quick_triage:
+  windows:
+    plugins:
+      - name: windows.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.malware.malfind
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.cmdline
+        args: {}
+        priority: 1
+        required: true
+    estimated_minutes: 4
+    description: "Fast initial assessment"
+
+  linux:
+    plugins:
+      - name: linux.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.malware.malfind
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.bash
+        args: {}
+        priority: 1
+        required: true
+    estimated_minutes: 4
+    description: "Fast Linux assessment"
+
+rootkit_hunt:
+  windows:
+    plugins:
+      - name: windows.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.psscan
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.malware.drivermodule
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.modules
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.driverscan
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.ssdt
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.callbacks
+        args: {}
+        priority: 2
+        required: false
+    estimated_minutes: 15
+    description: "Detect kernel-level rootkits"
+
+  linux:
+    plugins:
+      - name: linux.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.psscan
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.lsmod
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.malware.check_modules
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.malware.hidden_modules
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.malware.check_syscall
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.kthreads
+        args: {}
+        priority: 2
+        required: false
+    estimated_minutes: 12
+    description: "Detect Linux kernel rootkits"
+
+full_audit:
+  windows:
+    plugins:
+      - name: windows.info
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.pstree
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.psscan
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.cmdline
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.envars
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.dlllist
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.malware.malfind
+        args: {}
+        priority: 1
+        required: true
+      - name: windows.malware.hollowprocesses
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.malware.ldrmodules
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.handles
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.filescan
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.registry.hivelist
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.registry.userassist
+        args: {}
+        priority: 3
+        required: false
+      - name: windows.registry.scheduled_tasks
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.svcscan
+        args: {}
+        priority: 2
+        required: true
+      - name: windows.modules
+        args: {}
+        priority: 2
+        required: false
+      - name: windows.driverscan
+        args: {}
+        priority: 3
+        required: false
+      - name: windows.callbacks
+        args: {}
+        priority: 3
+        required: false
+    estimated_minutes: 35
+    description: "Comprehensive forensic analysis"
+
+  linux:
+    plugins:
+      - name: linux.pslist
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.pstree
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.psscan
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.psaux
+        args: {}
+        priority: 2
+        required: false
+      - name: linux.bash
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.envars
+        args: {}
+        priority: 2
+        required: false
+      - name: linux.lsof
+        args: {}
+        priority: 2
+        required: true
+      - name: linux.sockstat
+        args: {}
+        priority: 2
+        required: true
+      - name: linux.lsmod
+        args: {}
+        priority: 2
+        required: true
+      - name: linux.malware.malfind
+        args: {}
+        priority: 1
+        required: true
+      - name: linux.malware.check_syscall
+        args: {}
+        priority: 2
+        required: true
+      - name: linux.malware.check_modules
+        args: {}
+        priority: 2
+        required: true
+      - name: linux.malware.hidden_modules
+        args: {}
+        priority: 2
+        required: false
+      - name: linux.mountinfo
+        args: {}
+        priority: 3
+        required: false
+    estimated_minutes: 30
+    description: "Comprehensive Linux forensic analysis"

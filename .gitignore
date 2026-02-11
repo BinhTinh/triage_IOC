@@ -1,0 +1,338 @@
+# FILE: .gitignore
+
+# ============================================================================
+# MEMORY DUMPS & FORENSIC DATA (CRITICAL - LARGE FILES)
+# ============================================================================
+*.raw
+*.mem
+*.dmp
+*.vmem
+*.vmsn
+*.vmss
+*.bin
+*.dd
+*.img
+*.lime
+*.aff
+*.aff4
+*.e01
+*.ex01
+data/dumps/**
+dumps/**
+memory_dumps/**
+samples/**
+
+# ============================================================================
+# ANALYSIS REPORTS & OUTPUTS
+# ============================================================================
+data/reports/**
+reports/**
+output/**
+results/**
+*.txt
+*.json
+*.csv
+!requirements.txt
+!.gitkeep
+
+# Volatility plugin outputs
+plugins/output/**
+volatility_output/**
+
+# Timeline files
+timeline_*.json
+timeline_*.txt
+
+# IOC exports
+iocs_*.json
+iocs_*.csv
+
+# ============================================================================
+# PYTHON
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+poetry.lock
+Pipfile.lock
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.pytest_cache/
+.hypothesis/
+
+# Mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# pytype
+.pytype/
+
+# ============================================================================
+# DOCKER & CONTAINERS
+# ============================================================================
+docker-compose.override.yml
+.docker/
+docker/volumes/**
+!docker/volumes/.gitkeep
+
+# ============================================================================
+# DATABASES
+# ============================================================================
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+redis-data/
+postgres-data/
+*.rdb
+dump.rdb
+
+# ============================================================================
+# LOGS
+# ============================================================================
+logs/
+*.log
+log_*.txt
+audit_*.log
+error_*.log
+debug_*.log
+
+# ============================================================================
+# ENVIRONMENT & SECRETS
+# ============================================================================
+.env
+.env.local
+.env.*.local
+.env.production
+secrets.yaml
+config/secrets/**
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ============================================================================
+# IDE & EDITORS
+# ============================================================================
+# VSCode
+.vscode/
+*.code-workspace
+.history/
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# JetBrains
+.idea/
+*.iml
+out/
+
+# ============================================================================
+# OS SPECIFIC
+# ============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================================
+# VOLATILITY SPECIFIC
+# ============================================================================
+# Symbol files (large)
+symbols/**
+*.pdb
+*.sym
+
+# Volatility cache
+.volatility3/
+volatility_cache/
+vol_cache/
+
+# ISF files (Intermediate Symbol Format)
+*.isf
+*.json.gz
+
+# ============================================================================
+# MACHINE LEARNING MODELS (if used)
+# ============================================================================
+models/**
+*.h5
+*.pkl
+*.pickle
+*.joblib
+*.model
+*.weights
+
+# ============================================================================
+# TEMPORARY FILES
+# ============================================================================
+tmp/
+temp/
+.tmp/
+*.tmp
+*.bak
+*.backup
+*.old
+
+# ============================================================================
+# ARCHIVES
+# ============================================================================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.bz2
+*.xz
+
+# ============================================================================
+# DOCUMENTATION BUILD
+# ============================================================================
+docs/_build/
+docs/.doctrees/
+site/
+.mkdocs_cache/
+
+# ============================================================================
+# NODE (if any frontend)
+# ============================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ============================================================================
+# JUPYTER NOTEBOOKS
+# ============================================================================
+.ipynb_checkpoints/
+*.ipynb
+
+# ============================================================================
+# KEEP ESSENTIAL STRUCTURE
+# ============================================================================
+# Allow .gitkeep files to maintain directory structure
+!.gitkeep
+!**/.gitkeep
+
+# ============================================================================
+# PROJECT SPECIFIC
+# ============================================================================
+# DeepSeek API responses (cached)
+.deepseek_cache/
+api_responses/
+
+# Analysis artifacts
+malware_samples/
+infected_files/
+suspicious_files/
+
+# Test data (keep small samples only)
+tests/fixtures/large/**
+tests/data/dumps/**
+
+# Performance profiling
+*.prof
+*.lprof
+profile_*.txt
+
+# Benchmarks
+benchmark_results/
+performance_logs/
