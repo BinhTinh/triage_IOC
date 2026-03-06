@@ -51,5 +51,8 @@ class Settings:
             dir_path = Path(getattr(self, dir_attr))
             dir_path.mkdir(parents=True, exist_ok=True)
 
+    use_deepseek_validation: bool = False
+    deepseek_api_key: Optional[str] = None
+
 
 settings = Settings()

@@ -1,11 +1,10 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Set, Tuple, Optional
 import json
 
 from src.models.ioc import IOC
-from src.core.registry_analyzer import RegistryAnalyzer
 
 IOC_PATTERNS = {
     "ipv4": {
@@ -25,7 +24,17 @@ IOC_PATTERNS = {
             r"\.microsoft\.com$",
             r"\.windows\.com$",
             r"\.google\.com$",
-            r"\.googleapis\.com$"
+            r"\.googleapis\.com$",
+            r"\.exe$",
+            r"\.dll$",
+            r"\.sys$",
+            r"\.scr$",
+            r"\.vbs$",
+            r"\.bat$",
+            r"\.cmd$",
+            r"^[A-Za-z]:\\",
+            r"\\Device\\",
+            r"\\SystemRoot\\",
         ]
     },
     "md5": {
@@ -86,11 +95,97 @@ SUSPICIOUS_PATTERNS = {
     }
 }
 
+LINUX_NETWORK_WHITELIST = {
+    "sshd", "systemd", "networkmanager", "dhclient", "dhcpcd",
+    "chronyd", "ntpd", "resolved", "avahi-daemon", "cups",
+    "nginx", "apache2", "httpd", "lighttpd",
+    "python3", "python", "node", "ruby", "java",
+    "curl", "wget", "apt", "apt-get", "dpkg",
+    "chrome", "firefox", "chromium",
+}
 
+WINDOWS_NETWORK_WHITELIST = {
+    "svchost.exe", "lsass.exe", "services.exe", "system",
+    "chrome.exe", "firefox.exe", "msedge.exe", "iexplore.exe",
+    "outlook.exe", "teams.exe", "onedrive.exe",
+    "wuauclt.exe", "wusa.exe", "msiexec.exe",
+}
+
+COMMON_LEGITIMATE_PORTS = {
+    80, 443, 53, 22, 21, 25, 587, 993, 995,
+    8080, 8443,  # phổ biến cho web proxy/dev
+    3389, 5900,  # RDP, VNC — suspicious nếu outbound
+}
+
+RARE_PORTS = {
+    4444, 5555, 6666, 1337, 31337,
+    9001, 9030,  # Tor
+    6667, 6697,  # IRC
+}
+
+SYSTEM_DOMAIN_WHITELIST = {
+    "microsoft.com", "windows.com", "windowsupdate.com", "live.com",
+    "office.com", "office365.com", "microsoftonline.com", "azure.com",
+    "google.com", "googleapis.com", "gstatic.com", "gvt1.com",
+    "digicert.com", "verisign.com", "symantec.com", "thawte.com",
+    "comodo.com", "sectigo.com", "letsencrypt.org",
+    "cloudfront.net", "amazonaws.com", "awsstatic.com",
+    "akamaied.net", "akamaihd.net", "edgesuite.net",
+    "windowsazure.com", "visualstudio.com", "github.com",
+    "apple.com", "icloud.com", "adobe.com",
+    "nvidia.com", "intel.com", "amd.com",
+    "vmware.com", "virtualbox.org",
+}
+
+VALID_TLDS = {
+    "com", "net", "org", "io", "gov", "edu",
+    "ru", "cn", "tk", "top", "xyz", "info",
+    "biz", "cc", "pw", "su", "to", "onion",
+    "co", "uk", "de", "fr", "jp", "br",
+}
+
+REGEX_SCAN_PLUGINS = {
+    "cmdline", "bash", "malfind", "netscan", "netstat",
+    "dlllist", "handles", "mftparser", "filescan",
+    "svcscan", "sockscan", "sockstat", "lsof",      
+    "userassist", "printkey",                         
+}
 class IOCExtractor:
     def __init__(self):
         self.patterns = IOC_PATTERNS
         self.seen: Set[str] = set()
+        self.process_names = {
+            "smss.exe", "csrss.exe", "winlogon.exe", "services.exe", "lsass.exe",
+            "svchost.exe", "explorer.exe", "dwm.exe", "spoolsv.exe", "MsMpEng.exe",
+            "NisSrv.exe", "ctfmon.exe", "taskhostw.exe", "sihost.exe", "SearchHost.exe",
+            "WUDFHost.exe", "dllhost.exe", "msdtc.exe", "WmiPrvSE.exe", "fontdrvhost.exe",
+            "userinit.exe", "wininit.exe", "vm3dservice.exe", "vmtoolsd.exe", "OneDrive.exe",
+            "Widgets.exe"
+        }
+
+    def _is_valid_domain(self, value: str) -> bool:
+        value_lower = value.lower()
+        
+        if len(value) < 6:
+            return False
+        
+        parts = value_lower.split(".")
+        if len(parts) < 2:
+            return False
+        
+        tld = parts[-1]
+        
+        if tld not in VALID_TLDS:
+            return False
+        
+        for whitelist_domain in SYSTEM_DOMAIN_WHITELIST:
+            if value_lower == whitelist_domain or value_lower.endswith("." + whitelist_domain):
+                return False
+        
+        if any(len(p) > 50 for p in parts):
+            return False
+        
+        return True
     
     def extract_from_text(self, text: str, source: str) -> List[IOC]:
         iocs = []
@@ -102,9 +197,28 @@ class IOCExtractor:
                 if self._should_exclude(match, config["exclude"]):
                     continue
                 
+                if ioc_type == "domain":
+                    if not self._is_valid_domain(match):
+                        continue
+                
+                if ioc_type == "domain" and match.lower() in self.process_names:
+                    continue
+
+                if ioc_type == "md5" and not any(
+                    k in source.lower() for k in ["filescan", "dumpfiles", "ldrmodules"]
+                ):
+                    continue
+                
                 if match in self.seen:
                     continue
                 self.seen.add(match)
+                
+                confidence = 0.5
+                if ioc_type == "domain":
+                    if any(k in source.lower() for k in ["cmdline", "malfind", "netscan"]):
+                        confidence = 0.75
+                    else:
+                        confidence = 0.3
                 
                 normalized_type = ioc_type.split("_")[0]
                 if normalized_type == "filepath":
@@ -113,9 +227,9 @@ class IOCExtractor:
                 iocs.append(IOC(
                     ioc_type=normalized_type,
                     value=match,
-                    confidence=0.5,
+                    confidence=confidence,
                     source_plugin=source,
-                    context={"raw_match": True},
+                    context={"raw_match": True, "from_plugin": source},
                     extracted_at=datetime.now()
                 ))
         
@@ -126,6 +240,9 @@ class IOCExtractor:
             if re.match(pattern, value, re.IGNORECASE):
                 return True
         return False
+    def reset(self) -> None:
+        """Clear seen set — gọi trước mỗi extraction để tránh cross-dump dedup."""
+        self.seen.clear()
 
 
 class ContextAwareExtractor:
@@ -142,16 +259,16 @@ class ContextAwareExtractor:
         
         process_map = {}
         for proc in pslist_data:
-            pid = proc.get("PID") or proc.get("pid")
+            pid = proc.get("PID") or proc.get("pid") or proc.get("Pid")
             if pid:
                 process_map[pid] = proc
         
         for proc in pslist_data:
-            ppid = proc.get("PPID") or proc.get("ppid")
+            ppid = proc.get("PPID") or proc.get("ppid") or proc.get("PPid")
             if ppid and ppid in process_map:
                 parent = process_map[ppid]
-                parent_name = (parent.get("ImageFileName") or parent.get("name", "")).lower()
-                child_name = (proc.get("ImageFileName") or proc.get("name", "")).lower()
+                parent_name = (parent.get("ImageFileName") or parent.get("name") or parent.get("Name") or "").lower()
+                child_name = (proc.get("ImageFileName") or proc.get("name") or proc.get("Name") or "").lower()
                 
                 for rel in self.patterns.get("process_relationships", []):
                     if rel["parent"] in parent_name and rel["child"] in child_name:
@@ -162,7 +279,7 @@ class ContextAwareExtractor:
                             source_plugin="pstree",
                             context={
                                 "parent_pid": ppid,
-                                "child_pid": proc.get("PID") or proc.get("pid"),
+                                "child_pid": proc.get("PID") or proc.get("pid") or proc.get("Pid"),
                                 "technique": rel["technique"],
                                 "relationship": "suspicious_parent_child"
                             },
@@ -175,9 +292,9 @@ class ContextAwareExtractor:
         iocs = []
         
         for entry in cmdline_data:
-            cmdline = entry.get("Args") or entry.get("cmdline", "")
-            process_name = entry.get("ImageFileName") or entry.get("name", "")
-            pid = entry.get("PID") or entry.get("pid")
+            cmdline = entry.get("Args") or entry.get("cmdline") or entry.get("CommandLine") or ""
+            process_name = entry.get("ImageFileName") or entry.get("name") or entry.get("Name") or ""
+            pid = entry.get("PID") or entry.get("pid") or entry.get("Pid")
             
             for cmd_pattern in self.patterns.get("suspicious_commands", []):
                 if re.search(cmd_pattern["pattern"], cmdline, re.IGNORECASE):
@@ -201,14 +318,14 @@ class ContextAwareExtractor:
         iocs = []
         
         for entry in malfind_data:
-            protection = entry.get("Protection", "")
+            protection = entry.get("Protection") or entry.get("protection") or ""
             if "PAGE_EXECUTE_READWRITE" in protection or "rwx" in protection.lower():
-                hexdump = entry.get("Hexdump", "") or entry.get("hexdump", "")
+                hexdump = entry.get("Hexdump") or entry.get("hexdump") or entry.get("HexDump") or ""
                 has_mz = hexdump and ("MZ" in hexdump[:20] or "4D5A" in hexdump[:20].upper())
                 
-                pid = entry.get("PID") or entry.get("pid")
-                process = entry.get("Process") or entry.get("name", "")
-                start_vpn = entry.get("Start VPN") or entry.get("start", "")
+                pid = entry.get("PID") or entry.get("pid") or entry.get("Pid")
+                process = entry.get("Process") or entry.get("name") or entry.get("Name") or ""
+                start_vpn = entry.get("Start VPN") or entry.get("start") or entry.get("StartVPN") or ""
                 
                 iocs.append(IOC(
                     ioc_type="injection",
@@ -235,10 +352,10 @@ class ContextAwareExtractor:
         suspicious_ports = [4444, 5555, 6666, 1337, 31337, 8080, 8443]
         
         for conn in network_data:
-            process = (conn.get("Owner") or conn.get("name", "")).lower()
-            remote_port = conn.get("ForeignPort") or conn.get("remote_port", 0)
-            remote_ip = conn.get("ForeignAddr") or conn.get("remote_ip", "")
-            state = conn.get("State") or conn.get("state", "")
+            process = (conn.get("Owner") or conn.get("name") or conn.get("Name") or "").lower()
+            remote_port = conn.get("ForeignPort") or conn.get("remote_port") or conn.get("RemotePort") or 0
+            remote_ip = conn.get("ForeignAddr") or conn.get("remote_ip") or conn.get("RemoteAddr") or ""
+            state = conn.get("State") or conn.get("state") or ""
             
             is_suspicious = False
             reason = []
@@ -278,77 +395,60 @@ class ExtractionPipeline:
         self.regex_extractor = IOCExtractor()
         self.context_extractor = ContextAwareExtractor(os_type)
     
+
+    
     async def extract(self, plugin_results: Dict[str, Any]) -> List[IOC]:
+        self.regex_extractor.reset()
         all_iocs = []
-        
         for plugin_name, data in plugin_results.items():
             if not data:
                 continue
-            
+
+            plugin_short = plugin_name.lower().split(".")[-1]
+            if not any(k in plugin_short for k in REGEX_SCAN_PLUGINS):
+                continue
+
             text_data = json.dumps(data) if isinstance(data, (list, dict)) else str(data)
             regex_iocs = self.regex_extractor.extract_from_text(text_data, plugin_name)
             all_iocs.extend(regex_iocs)
-        
-        pslist_keys = ["windows.pslist", "linux.pslist", "pslist"]
-        pstree_keys = ["windows.pstree", "linux.pstree", "pstree"]
-        
-        pslist_data = None
-        pstree_data = None
-        
-        for key in pslist_keys:
-            if key in plugin_results and plugin_results[key]:
-                pslist_data = plugin_results[key]
-                break
-        
-        for key in pstree_keys:
-            if key in plugin_results and plugin_results[key]:
-                pstree_data = plugin_results[key]
-                break
-        
-        if pslist_data:
-            process_iocs = self.context_extractor.analyze_processes(
-                pslist_data, pstree_data or []
-            )
-            all_iocs.extend(process_iocs)
-        
-        cmdline_keys = ["windows.cmdline", "linux.bash", "cmdline", "bash"]
-        for key in cmdline_keys:
-            if key in plugin_results and plugin_results[key]:
-                cmdline_iocs = self.context_extractor.analyze_cmdlines(plugin_results[key])
-                all_iocs.extend(cmdline_iocs)
-        
-        malfind_keys = ["windows.malware.malfind", "linux.malware.malfind", "malfind"]
-        for key in malfind_keys:
-            if key in plugin_results and plugin_results[key]:
-                injection_iocs = self.context_extractor.analyze_malfind(plugin_results[key])
-                all_iocs.extend(injection_iocs)
-        
-        network_keys = ["windows.netscan", "linux.sockstat", "sockstat", "handles"]
-        for key in network_keys:
-            if key in plugin_results and plugin_results[key]:
-                network_iocs = self.context_extractor.analyze_network(plugin_results[key])
-                all_iocs.extend(network_iocs)
 
-        registry_analyzer = RegistryAnalyzer()
+        def find_plugin_data(plugin_keywords: List[str]) -> Optional[Any]:
+            for key in plugin_results.keys():
+                key_lower = key.lower()
+                if any(keyword.lower() in key_lower for keyword in plugin_keywords):
+                    return plugin_results[key]
+            return None
+        
+        pslist_data  = find_plugin_data(["pslist"])
+        pstree_data  = find_plugin_data(["pstree"])
+        if pslist_data:
+            all_iocs.extend(
+                self.context_extractor.analyze_processes(pslist_data, pstree_data or [])
+            )
+
+        cmdline_data = find_plugin_data(["cmdline", "bash"])
+        if cmdline_data:
+            all_iocs.extend(self.context_extractor.analyze_cmdlines(cmdline_data))
+
+        malfind_data = find_plugin_data(["malfind", "hollowprocesses"])
+        if malfind_data:
+            all_iocs.extend(self.context_extractor.analyze_malfind(malfind_data))
+
+        network_data = find_plugin_data(["netscan", "netstat", "sockstat"])
+        if network_data:
+            all_iocs.extend(self.context_extractor.analyze_network(network_data))
+
         registry_entries = []
-        
-        registry_keys = [
-            "windows.registry.printkey",
-            "windows.registry.userassist",
-            "windows.registry.hivelist"
-        ]
-        
-        for key in registry_keys:
-            if key in plugin_results and plugin_results[key]:
-                registry_entries.extend(plugin_results[key])
-        
+        for key, value in plugin_results.items():
+            if "registry" in key.lower() and value:
+                entries = value if isinstance(value, list) else [value]
+                registry_entries.extend(entries)
+
         if registry_entries:
-            registry_findings = registry_analyzer.analyze(registry_entries)
-            registry_iocs = self._convert_registry_findings(registry_findings)
-            all_iocs.extend(registry_iocs)
-        
-        return self._deduplicate(all_iocs)
-        
+            from src.core.registry_analyzer import RegistryAnalyzer
+            registry_findings = RegistryAnalyzer().analyze(registry_entries)
+            all_iocs.extend(self._convert_registry_findings(registry_findings))
+
         return self._deduplicate(all_iocs)
     
     def _deduplicate(self, iocs: List[IOC]) -> List[IOC]:
@@ -394,3 +494,8 @@ class ExtractionPipeline:
             iocs.append(ioc)
         
         return iocs
+    
+    def reset(self) -> None:
+        """Reset state cho phép reuse pipeline trên nhiều dump."""
+        self.regex_extractor.seen.clear()
+

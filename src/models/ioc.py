@@ -65,15 +65,20 @@ class ValidatedIOC:
     reason: str
     
     def to_dict(self) -> dict:
+        ioc_dict = self.ioc.to_dict()
         return {
-            "ioc": self.ioc.to_dict(),
+            "type":             ioc_dict["type"],
+            "value":            ioc_dict["value"],
+            "confidence":       ioc_dict["confidence"],
+            "source":           ioc_dict["source"],
+            "context":          ioc_dict["context"],
+            "extracted_at":     ioc_dict["extracted_at"],
             "final_confidence": self.final_confidence,
-            "verdict": self.verdict,
-            "reason": self.reason,
-            "validation_results": [r.to_dict() for r in self.validation_results]
+            "verdict":          self.verdict,
+            "reason":           self.reason,
+            "validation_results": [r.to_dict() for r in self.validation_results],
         }
     
-@dataclass
 class IOCType(Enum):
     DOMAIN = "domain"
     IPV4 = "ipv4"
@@ -86,7 +91,6 @@ class IOCType(Enum):
     MUTEX = "mutex"
     EMAIL = "email"
     INJECTION = "injection"
-
     REGISTRY_PERSISTENCE = "registry_persistence"
     REGISTRY_CONFIG = "registry_config"
     REGISTRY_DEFENSE_EVASION = "registry_defense_evasion"

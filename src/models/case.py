@@ -37,16 +37,17 @@ class Case:
     
     def to_dict(self) -> dict:
         return {
-            "id": self.id,
-            "dump_path": self.dump_path,
-            "dump_hash": self.dump_hash,
-            "os_type": self.os_type,
-            "os_version": self.os_version,
-            "os_arch": self.os_arch,
-            "goal": self.goal,
-            "status": self.status.value,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-            "findings_count": self.findings_count,
-            "iocs_count": self.iocs_count
+            "id":              self.id,
+            "dump_path":       self.dump_path,
+            "dump_hash":       self.dump_hash,
+            "os_type":         self.os_type,
+            "os_version":      self.os_version,
+            "os_arch":         self.os_arch,
+            "goal":            self.goal,
+            "status":          self.status.value,
+            "created_at":      self.created_at.isoformat(),
+            "updated_at":      self.updated_at.isoformat(),
+            "findings_count":  self.findings_count,
+            "iocs_count":      self.iocs_count,
+            "metadata":        self.metadata,
         }

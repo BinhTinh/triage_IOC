@@ -31,31 +31,31 @@ class DecisionEngine:
             "malware_detection": {
                 "windows": {
                     "plugins": [
-                        {"name": "windows.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.pstree", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.psscan", "args": {}, "priority": 2, "required": False},
-                        {"name": "windows.registry.hivelist", "args": {}, "priority": 2, "required": False},
-                        {"name": "windows.registry.printkey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\Run"}, "priority": 2, "required": False},
-                        {"name": "windows.registry.printkey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"}, "priority": 2, "required": False},
-                        {"name": "windows.registry.printkey", "args": {"key": "System\\CurrentControlSet\\Services"}, "priority": 3, "required": False},
-                        {"name": "windows.registry.printkey", "args": {"key": "Software\\Microsoft\\Windows Defender\\Exclusions"}, "priority": 3, "required": False},
-                        {"name": "windows.registry.userassist", "args": {}, "priority": 3, "required": False},
-                        
-                        {"name": "windows.malware.malfind", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.cmdline", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.dlllist", "args": {}, "priority": 2, "required": False},
-                        {"name": "windows.handles", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.pstree.PsTree", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.psscan.PsScan", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.registry.hivelist.HiveList", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\Run"}, "priority": 2, "required": False},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"}, "priority": 2, "required": False},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "System\\CurrentControlSet\\Services"}, "priority": 3, "required": False},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "Software\\Microsoft\\Windows Defender\\Exclusions"}, "priority": 3, "required": False},
+                        {"name": "windows.registry.userassist.UserAssist", "args": {}, "priority": 3, "required": False},
+                        {"name": "windows.malware.malfind.Malfind", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.cmdline.CmdLine", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.dlllist.DllList", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.handles.Handles", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.malware.hollowprocesses.HollowProcesses", "args": {}, "priority": 2, "required": False}, 
                     ],
                     "estimated_minutes": 15,
                     "description": "Detect malware indicators with registry analysis"
                 },
                 "linux": {
                     "plugins": [
-                        {"name": "linux.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.pstree", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.malware.malfind", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.bash", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.sockstat", "args": {}, "priority": 2, "required": False},
+                        {"name": "linux.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.pstree.PsTree", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.malware.malfind.Malfind", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.bash.Bash", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.sockstat.Sockstat", "args": {}, "priority": 2, "required": False},
                     ],
                     "estimated_minutes": 12,
                     "description": "Detect Linux malware"
@@ -64,18 +64,18 @@ class DecisionEngine:
             "quick_triage": {
                 "windows": {
                     "plugins": [
-                        {"name": "windows.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.malware.malfind", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.cmdline", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.malware.malfind.Malfind", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.cmdline.CmdLine", "args": {}, "priority": 1, "required": True},
                     ],
                     "estimated_minutes": 4,
                     "description": "Fast initial assessment"
                 },
                 "linux": {
                     "plugins": [
-                        {"name": "linux.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.malware.malfind", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.bash", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.malware.malfind.Malfind", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.bash.Bash", "args": {}, "priority": 1, "required": True},
                     ],
                     "estimated_minutes": 4,
                     "description": "Fast Linux assessment"
@@ -84,30 +84,33 @@ class DecisionEngine:
             "incident_response": {
                 "windows": {
                     "plugins": [
-                        {"name": "windows.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.pstree", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.cmdline", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.handles", "args": {}, "priority": 2, "required": True},
-                        {"name": "windows.filescan", "args": {}, "priority": 2, "required": False},
-                        {"name": "windows.registry.hivelist", "args": {}, "priority": 2, "required": True},
-                        {"name": "windows.registry.printkey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\Run"}, "priority": 2, "required": True},
-                        {"name": "windows.registry.printkey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"}, "priority": 2, "required": True},
-                        {"name": "windows.registry.printkey", "args": {"key": "Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"}, "priority": 2, "required": False},
-                        {"name": "windows.registry.printkey", "args": {"key": "System\\CurrentControlSet\\Services"}, "priority": 2, "required": True},
-                        {"name": "windows.registry.userassist", "args": {}, "priority": 3, "required": False},
-                        
-                        {"name": "windows.svcscan", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.pstree.PsTree", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.cmdline.CmdLine", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.handles.Handles", "args": {}, "priority": 2, "required": True},
+                        {"name": "windows.filescan.FileScan", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.registry.hivelist.HiveList", "args": {}, "priority": 2, "required": True},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\Run"}, "priority": 2, "required": True},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"}, "priority": 2, "required": True},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"}, "priority": 2, "required": False},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "System\\CurrentControlSet\\Services"}, "priority": 2, "required": True},
+                        {"name": "windows.registry.userassist.UserAssist", "args": {}, "priority": 3, "required": False},
+                        {"name": "windows.svcscan.SvcScan", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.malware.malfind.Malfind", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "System\\CurrentControlSet\\Control\\Lsa"}, "priority": 2, "required": False},
+                        {"name": "windows.malware.hollowprocesses.HollowProcesses", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.registry.printkey.PrintKey", "args": {"key": "Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows"}, "priority": 2, "required": False}, 
                     ],
                     "estimated_minutes": 25,
                     "description": "IR artifact collection with comprehensive registry analysis"
                 },
                 "linux": {
                     "plugins": [
-                        {"name": "linux.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.pstree", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.bash", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.lsof", "args": {}, "priority": 2, "required": True},
-                        {"name": "linux.sockstat", "args": {}, "priority": 2, "required": True},
+                        {"name": "linux.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.pstree.PsTree", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.bash.Bash", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.lsof.Lsof", "args": {}, "priority": 2, "required": True},
+                        {"name": "linux.sockstat.Sockstat", "args": {}, "priority": 2, "required": True},
                     ],
                     "estimated_minutes": 15,
                     "description": "Linux IR artifacts"
@@ -116,29 +119,51 @@ class DecisionEngine:
             "rootkit_hunt": {
                 "windows": {
                     "plugins": [
-                        {"name": "windows.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.psscan", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.malware.drivermodule", "args": {}, "priority": 1, "required": True},
-                        {"name": "windows.modules", "args": {}, "priority": 2, "required": True},
-                        {"name": "windows.ssdt", "args": {}, "priority": 2, "required": False},
-                        {"name": "windows.callbacks", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.psscan.PsScan", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.malware.drivermodule.DriverModule", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.modules.Modules", "args": {}, "priority": 2, "required": True},
+                        {"name": "windows.ssdt.SSDT", "args": {}, "priority": 2, "required": False},
+                        {"name": "windows.callbacks.Callbacks", "args": {}, "priority": 2, "required": False},
                     ],
                     "estimated_minutes": 15,
                     "description": "Detect kernel rootkits"
                 },
                 "linux": {
                     "plugins": [
-                        {"name": "linux.pslist", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.psscan", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.lsmod", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.malware.check_modules", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.malware.hidden_modules", "args": {}, "priority": 1, "required": True},
-                        {"name": "linux.malware.check_syscall", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.psscan.PsScan", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.lsmod.Lsmod", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.malware.check_modules.Check_modules", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.malware.hidden_modules.Hidden_modules", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.malware.check_syscall.Check_syscall", "args": {}, "priority": 1, "required": True},
                     ],
                     "estimated_minutes": 12,
                     "description": "Detect Linux rootkits"
                 }
-            }
+            },
+            "network_forensics": {
+                "windows": {
+                    "plugins": [
+                        {"name": "windows.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.handles.Handles", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.cmdline.CmdLine", "args": {}, "priority": 1, "required": True},
+                        {"name": "windows.malware.malfind.Malfind", "args": {}, "priority": 2, "required": False},
+                    ],
+                    "estimated_minutes": 10,
+                    "description": "C2 and network connection investigation",
+                },
+                "linux": {
+                    "plugins": [
+                        {"name": "linux.pslist.PsList", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.sockstat.Sockstat", "args": {}, "priority": 1, "required": True},
+                        {"name": "linux.bash.Bash", "args": {}, "priority": 1, "required": True},
+                    ],
+                    "estimated_minutes": 8,
+                    "description": "Linux network forensics",
+                },
+            },
+
         }
     
     def get_triage_plan(self, os_type: str, goal: str) -> TriagePlan:
@@ -160,22 +185,22 @@ class DecisionEngine:
     
     def get_plugin_catalog(self) -> dict:
         windows_plugins = [
-            "windows.pslist", "windows.pstree", "windows.psscan", "windows.cmdline",
-            "windows.dlllist", "windows.handles", "windows.filescan",
-            "windows.malware.malfind", "windows.malware.hollowprocesses",
-            "windows.registry.hivelist", 
-            "windows.registry.printkey",
-            "windows.registry.userassist",
-            "windows.registry.certificates",
-            
-            "windows.svcscan", "windows.modules", "windows.driverscan"
-        ]
+        "windows.pslist.PsList", "windows.pstree.PsTree", "windows.psscan.PsScan",
+        "windows.cmdline.CmdLine", "windows.handles.Handles",
+        "windows.dlllist.DllList", "windows.filescan.FileScan",
+        "windows.malware.malfind.Malfind", "windows.malware.hollowprocesses.HollowProcesses",
+        "windows.registry.hivelist.HiveList",
+        "windows.registry.printkey.PrintKey",
+        "windows.registry.userassist.UserAssist",
+        "windows.registry.certificates.Certificates",
+        "windows.svcscan.SvcScan", "windows.modules.Modules", "windows.driverscan.DriverScan"
+    ]
         
         linux_plugins = [
-            "linux.pslist", "linux.pstree", "linux.psscan", "linux.bash",
-            "linux.lsof", "linux.sockstat", "linux.lsmod",
-            "linux.malware.malfind", "linux.malware.check_syscall",
-            "linux.malware.check_modules", "linux.malware.hidden_modules"
+            "linux.pslist.PsList", "linux.pstree.PsTree", "linux.psscan.PsScan", "linux.bash.Bash",
+            "linux.lsof.Lsof", "linux.sockstat.Sockstat", "linux.lsmod.Lsmod",
+            "linux.malware.malfind.Malfind", "linux.malware.check_syscall.Check_syscall",
+            "linux.malware.check_modules.Check_modules", "linux.malware.hidden_modules.Hidden_modules"
         ]
         
         return {
@@ -186,18 +211,17 @@ class DecisionEngine:
     
     def get_plugin_info(self, plugin_name: str) -> dict:
         plugin_info = {
-            "windows.pslist": {"description": "Lists processes", "category": "process"},
-            "windows.pstree": {"description": "Process tree view", "category": "process"},
-            "windows.malware.malfind": {"description": "Find injected code", "category": "malware"},
-            "windows.cmdline": {"description": "Process command lines", "category": "process"},
-            "windows.registry.hivelist": {"description": "List registry hives", "category": "registry"},
-            "windows.registry.printkey": {"description": "Print registry key values", "category": "registry"},
-            "windows.registry.userassist": {"description": "UserAssist execution history", "category": "registry"},
-            "windows.registry.certificates": {"description": "List certificates", "category": "registry"},
-            
-            "linux.pslist": {"description": "Lists Linux processes", "category": "process"},
-            "linux.bash": {"description": "Bash history", "category": "artifacts"},
-            "linux.malware.malfind": {"description": "Find injected code", "category": "malware"},
+            "windows.pslist.PsList": {"description": "Lists processes", "category": "process"},
+            "windows.pstree.PsTree": {"description": "Process tree view", "category": "process"},
+            "windows.malware.malfind.Malfind": {"description": "Find injected code", "category": "malware"},
+            "windows.cmdline.CmdLine": {"description": "Process command lines", "category": "process"},
+            "windows.registry.hivelist.HiveList": {"description": "List registry hives", "category": "registry"},
+            "windows.registry.printkey.PrintKey": {"description": "Print registry key values", "category": "registry"},
+            "windows.registry.userassist.UserAssist": {"description": "UserAssist execution history", "category": "registry"},
+            "windows.registry.certificates.Certificates": {"description": "List certificates", "category": "registry"},
+            "linux.pslist.PsList": {"description": "Lists Linux processes", "category": "process"},
+            "linux.bash.Bash": {"description": "Bash history", "category": "artifacts"},
+            "linux.malware.malfind.Malfind": {"description": "Find injected code", "category": "malware"},
         }
         
         if plugin_name in plugin_info:
@@ -205,7 +229,7 @@ class DecisionEngine:
         
         return {"name": plugin_name, "description": "No description available", "category": "unknown"}
 
+_engine = DecisionEngine()
 
 def get_triage_plan(os_type: str, goal: str) -> TriagePlan:
-    engine = DecisionEngine()
-    return engine.get_triage_plan(os_type, goal)
+    return _engine.get_triage_plan(os_type, goal)

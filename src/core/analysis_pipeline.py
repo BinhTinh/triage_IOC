@@ -245,7 +245,7 @@ class AnalysisPipeline:
         
         case.malware_classification = malware_classification
         
-        await self._log(f"Malware family: {malware_classification.primary_family.value} ({malware_classification.confidence:.0%} confidence)")
+        await self._log(f"Malware family: {malware_classification.get('family', 'Unknown')} ({malware_classification.get('confidence', 0):.0%} confidence)")
         await self._log(f"Matched patterns: {len(malware_classification.matched_patterns)}")
         
         behavior_path = report_gen.save_behavior_analysis(malware_classification)

@@ -2,28 +2,52 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# ── System dependencies ───────────────────────────────────────────────
 RUN apt-get update && apt-get install -y \
     curl \
     git \
+    wget \
+    xz-utils \
+    dpkg \
+    netcat-traditional \
     && rm -rf /var/lib/apt/lists/*
 
+# ── dwarf2json (chạy với root TRƯỚC khi switch user) ─────────────────
+RUN wget -q \
+    https://github.com/volatilityfoundation/dwarf2json/releases/latest/download/dwarf2json-linux-amd64 \
+    -O /usr/local/bin/dwarf2json \
+    && chmod +x /usr/local/bin/dwarf2json \
+    && dwarf2json --help > /dev/null 2>&1 \
+    && echo "✓ dwarf2json installed: $(dwarf2json --help 2>&1 | head -1)"
+
+# ── Python deps ───────────────────────────────────────────────────────
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ── App source ────────────────────────────────────────────────────────
 COPY src/ ./src/
 COPY config/ ./config/
 
-RUN mkdir -p /app/data/dumps /app/data/symbols /app/data/reports /app/data/cache
+COPY --chmod=755 docker/scripts/entrypoint.sh /app/entrypoint.sh
+COPY --chmod=755 docker/scripts/healthcheck.sh /app/healthcheck.sh
 
+# ── Data directories ──────────────────────────────────────────────────
+RUN mkdir -p \
+    /app/data/dumps \
+    /app/data/symbols \
+    /app/data/reports \
+    /app/data/cache
+
+# ── Non-root user ─────────────────────────────────────────────────────
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-ENV PYTHONPATH=/app:/opt/volatility3
+ENV PYTHONPATH=/app:/app/volatility3
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD bash /app/healthcheck.sh
 
-CMD ["python", "-m", "src.mcp_server", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/entrypoint.sh"]
