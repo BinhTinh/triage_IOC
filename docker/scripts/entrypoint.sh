@@ -6,8 +6,22 @@ echo "Starting Volatility3 IOC Extraction Server..."
 
 mkdir -p /app/data/dumps
 mkdir -p /app/data/symbols
+mkdir -p /app/data/symbols/volatility3/windows
 mkdir -p /app/data/reports
 mkdir -p /app/data/cache
+mkdir -p /app/data/cache/volatility3
+mkdir -p /app/.cache
+
+if [ -d /opt/volatility3-bootstrap/windows ]; then
+    cp -rn /opt/volatility3-bootstrap/windows/. /app/data/symbols/volatility3/windows/
+    echo "Seeded Volatility builtin Windows symbols into writable symbols directory"
+fi
+
+export HOME=${HOME:-/app}
+export XDG_CACHE_HOME=${XDG_CACHE_HOME:-/app/data/cache}
+export VOLATILITY_CACHE_DIR=${VOLATILITY_CACHE_DIR:-/app/data/cache/volatility3}
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=/app:/app/volatility3:$PYTHONPATH
 
 if [ -n "$REDIS_URL" ]; then
     echo "Waiting for Redis..."
@@ -43,9 +57,7 @@ fi
 
 echo "Verifying Volatility3 installation..."
 python3 -c "import volatility3; print(f'Volatility3 version: {volatility3.__version__}')" 2>/dev/null || echo "Volatility3 not found, some features may be unavailable"
-
-export PYTHONUNBUFFERED=1
-export PYTHONPATH=/app:$PYTHONPATH
+echo "Volatility cache directory: ${VOLATILITY_CACHE_DIR}"
 
 if [ "$MCP_TRANSPORT" = "http" ]; then
     echo "Starting MCP server with HTTP transport on ${MCP_HOST:-0.0.0.0}:${MCP_PORT:-8000}..."

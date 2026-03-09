@@ -17,7 +17,7 @@
 *.aff4
 *.e01
 *.ex01
-data/dumps/**
+data/**
 dumps/**
 memory_dumps/**
 samples/**

@@ -2,14 +2,23 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ENV HOME=/app
+ENV XDG_CACHE_HOME=/app/data/cache
+ENV VOLATILITY_CACHE_DIR=/app/data/cache/volatility3
+
 # ── System dependencies ───────────────────────────────────────────────
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    ca-certificates \
     curl \
+    dnsutils \
     git \
+    iputils-ping \
     wget \
     xz-utils \
     dpkg \
     netcat-traditional \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # ── dwarf2json (chạy với root TRƯỚC khi switch user) ─────────────────
@@ -24,6 +33,11 @@ RUN wget -q \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN mkdir -p /opt/volatility3-bootstrap/windows \
+    && python3 -m pip install --no-deps volatility3==2.27.0 -t /tmp/volatility3-package \
+    && cp -r /tmp/volatility3-package/volatility3/framework/symbols/windows/. /opt/volatility3-bootstrap/windows/ \
+    && rm -rf /tmp/volatility3-package
+
 # ── App source ────────────────────────────────────────────────────────
 COPY src/ ./src/
 COPY config/ ./config/
@@ -36,7 +50,9 @@ RUN mkdir -p \
     /app/data/dumps \
     /app/data/symbols \
     /app/data/reports \
-    /app/data/cache
+    /app/data/cache \
+    /app/data/cache/volatility3 \
+    /app/.cache
 
 # ── Non-root user ─────────────────────────────────────────────────────
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app

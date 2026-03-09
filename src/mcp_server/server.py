@@ -26,7 +26,7 @@ async def lifespan(app):
 
         print(f"✅ Redis connected: {_REDIS_URL}", file=sys.stderr)
     except Exception as e:
-        print(f"⚠️  Redis unavailable ({e}, file=sys.stderr) — running without cache")
+        print(f"⚠️  Redis unavailable ({e}) — running without cache", file=sys.stderr)
 
     yield
 
@@ -40,8 +40,9 @@ mcp = FastMCP(
     lifespan=lifespan,
     instructions=(
         "MCP server for IOC extraction from memory dumps using Volatility3. "
-        "Flow: list_available_dumps → detect_os → smart_triage → batch_plugins → ioc_extract. "
-        "Never skip detect_os — os_type is required by batch_plugins and ioc_extract."
+        "Flow: list_dumps → detect_os → run_plugins → ioc_extract → ioc_validate. "
+        "Use run_plugins(store_only=true) + result_id tools for large outputs. "
+        "Never skip detect_os — os_type is required by run_plugins and ioc_extract."
     ),
 )
 

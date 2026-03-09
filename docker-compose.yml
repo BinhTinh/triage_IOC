@@ -10,6 +10,11 @@ services:
       - ./data:/app/data
       - ./config:/app/config:ro
       - ./volatility3:/app/volatility3:ro
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - REDIS_URL=redis://redis:6379
       - VT_API_KEY=${VT_API_KEY}
@@ -24,8 +29,14 @@ services:
       - USE_DEEPSEEK=${USE_DEEPSEEK:-true}
       - USE_LOCAL_PATTERNS=${USE_LOCAL_PATTERNS:-true}
       - SYMBOLS_DIR=/app/data/symbols/volatility3
+      - VOLATILITY_CACHE_DIR=/app/data/cache/volatility3
       - REPORTS_DIR=/app/data/reports
       - CONFIG_DIR=/app/config
+      - HOME=/app
+      - XDG_CACHE_HOME=/app/data/cache
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,redis}
     depends_on:
       redis:
         condition: service_healthy

@@ -29,6 +29,7 @@ class Settings:
     symbols_dir: str = field(default_factory=lambda: os.getenv("SYMBOLS_DIR", str(Path(__file__).parent.parent.parent / "data" / "symbols")))
     reports_dir: str = field(default_factory=lambda: os.getenv("REPORTS_DIR", str(Path(__file__).parent.parent.parent / "data" / "reports")))
     cache_dir: str = field(default_factory=lambda: os.getenv("CACHE_DIR", str(Path(__file__).parent.parent.parent / "data" / "cache")))
+    volatility_cache_dir: str = field(default_factory=lambda: os.getenv("VOLATILITY_CACHE_DIR", str(Path(__file__).parent.parent.parent / "data" / "cache" / "volatility3")))
     
     volatility_path: str = field(default_factory=lambda: os.getenv("VOLATILITY_PATH", "python3 -m volatility3.cli"))
     
@@ -47,7 +48,7 @@ class Settings:
     rate_limit_period: int = field(default_factory=lambda: int(os.getenv("RATE_LIMIT_PERIOD", "60")))
     
     def __post_init__(self):
-        for dir_attr in ["data_dir", "dumps_dir", "symbols_dir", "reports_dir", "cache_dir"]:
+        for dir_attr in ["data_dir", "dumps_dir", "symbols_dir", "reports_dir", "cache_dir", "volatility_cache_dir"]:
             dir_path = Path(getattr(self, dir_attr))
             dir_path.mkdir(parents=True, exist_ok=True)
 

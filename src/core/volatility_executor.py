@@ -30,6 +30,7 @@ class VolatilityExecutor:
         self.vol_command = self._detect_vol_command()
         self.timeout = settings.plugin_timeout
         self.symbol_dirs = settings.symbols_dir
+        self.cache_dir = settings.volatility_cache_dir
         self._dump_hashes: Dict[str, str] = {}
         self._redis = redis_client
 
@@ -109,6 +110,9 @@ class VolatilityExecutor:
 
         cmd = self.vol_command.copy()
         cmd.extend(["-f", dump_path, "-r", renderer])
+
+        if self.cache_dir and Path(self.cache_dir).exists():
+            cmd.extend(["--cache-path", self.cache_dir])
 
         if self.symbol_dirs and Path(self.symbol_dirs).exists():
             cmd.extend(["-s", self.symbol_dirs])
