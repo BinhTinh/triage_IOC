@@ -1,3 +1,4 @@
+import sys
 import aiohttp
 import asyncio
 import json
@@ -110,7 +111,7 @@ class DeepSeekValidator:
                     if response.status != 200:
                         error_text = await response.text()
                         if attempt == 2:
-                            print(f"DeepSeek HTTP {response.status}: {error_text[:100]}")
+                            print(f"DeepSeek HTTP {response.status}: {error_text[:100]}", file=sys.stderr)
                             return [self._fallback_result(ioc) for ioc in iocs]
                         continue
                     
@@ -119,7 +120,7 @@ class DeepSeekValidator:
                     if "usage" in result:
                         usage = result["usage"]
                         self.total_tokens += usage.get("total_tokens", 0)
-                        print(f"[API] In: {usage.get('prompt_tokens',0)} (cache_hit: {usage.get('prompt_cache_hit_tokens',0)}, miss: {usage.get('prompt_cache_miss_tokens',0)}), Out: {usage.get('completion_tokens',0)}")
+                        print(f"[API] In: {usage.get('prompt_tokens',0, file=sys.stderr)} (cache_hit: {usage.get('prompt_cache_hit_tokens',0)}, miss: {usage.get('prompt_cache_miss_tokens',0)}), Out: {usage.get('completion_tokens',0)}")
                     
                     content = result["choices"][0]["message"]["content"].strip()
                     
@@ -156,7 +157,7 @@ class DeepSeekValidator:
             
             except Exception as e:
                 if attempt == 2:
-                    print(f"DeepSeek error: {type(e).__name__}")
+                    print(f"DeepSeek error: {type(e, file=sys.stderr).__name__}")
                     return [self._fallback_result(ioc) for ioc in iocs]
                 await asyncio.sleep(2 ** attempt)
         
@@ -275,7 +276,7 @@ class HybridValidator:
                 ))
         
         if self.deepseek:
-            print(f"\nDeepSeek Total: {self.deepseek.total_requests} requests, {self.deepseek.total_tokens} tokens")
+            print(f"\nDeepSeek Total: {self.deepseek.total_requests} requests, {self.deepseek.total_tokens} tokens", file=sys.stderr)
         
         return results
     

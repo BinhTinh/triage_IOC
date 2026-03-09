@@ -1,11 +1,13 @@
 import asyncio
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from src.config.settings import settings
+
 
 @dataclass
 class PluginResult:
@@ -13,14 +15,15 @@ class PluginResult:
     success: bool
     data: Optional[List[Dict[str, Any]]]
     error: Optional[str]
-    
+
     def to_dict(self) -> dict:
         return {
             "plugin": self.plugin,
             "success": self.success,
             "data": self.data,
-            "error": self.error
+            "error": self.error,
         }
+
 
 class VolatilityExecutor:
     def __init__(self, redis_client=None):
@@ -29,64 +32,47 @@ class VolatilityExecutor:
         self.symbol_dirs = settings.symbols_dir
         self._dump_hashes: Dict[str, str] = {}
         self._redis = redis_client
-    
+
     def _detect_vol_command(self) -> list:
-        """Auto-detect how to run Volatility3"""
         import subprocess
-        
-        # Try method 1: vol.py (standalone)
-        vol_paths = [
-            "/opt/volatility3/vol.py",
-            "/app/volatility3/vol.py",
-            "./volatility3/vol.py"
-        ]
-        
-        for vol_path in vol_paths:
+
+        for vol_path in ["/opt/volatility3/vol.py", "/app/volatility3/vol.py", "./volatility3/vol.py"]:
             if Path(vol_path).exists():
-                print(f"✅ Using Volatility3 standalone: {vol_path}")
+                print(f"✅ Using Volatility3 standalone: {vol_path}", file=sys.stderr)
                 return ["python3", vol_path]
-        
-        # Try method 2: Python module
+
         try:
             result = subprocess.run(
                 ["python3", "-m", "volatility3.cli", "-h"],
-                capture_output=True,
-                timeout=5
+                capture_output=True, timeout=5
             )
             if result.returncode == 0:
-                print("✅ Using Volatility3 module: python3 -m volatility3.cli")
+                print("✅ Using Volatility3 module: python3 -m volatility3.cli", file=sys.stderr)
                 return ["python3", "-m", "volatility3.cli"]
         except Exception:
             pass
-        
-        # Try method 3: Installed as command
+
         try:
-            result = subprocess.run(
-                ["vol", "-h"],
-                capture_output=True,
-                timeout=5
-            )
+            result = subprocess.run(["vol", "-h"], capture_output=True, timeout=5)
             if result.returncode == 0:
-                print("✅ Using Volatility3 command: vol")
+                print("✅ Using Volatility3 command: vol", file=sys.stderr)
                 return ["vol"]
         except Exception:
             pass
-        
-        # Fallback to module method
-        print("⚠️ Using default: python3 -m volatility3.cli")
+
+        print("⚠️ Using default: python3 -m volatility3.cli", file=sys.stderr)
         return ["python3", "-m", "volatility3.cli"]
-    
+
     async def get_dump_hash(self, dump_path: str) -> str:
         if dump_path in self._dump_hashes:
             return self._dump_hashes[dump_path]
-        
+
         sha256 = hashlib.sha256()
         path = Path(dump_path)
-        
         chunk_size = 1024 * 1024
         bytes_read = 0
         max_bytes = 100 * 1024 * 1024
-        
+
         with open(path, "rb") as f:
             while bytes_read < max_bytes:
                 chunk = f.read(chunk_size)
@@ -94,20 +80,18 @@ class VolatilityExecutor:
                     break
                 sha256.update(chunk)
                 bytes_read += len(chunk)
-        
-        file_size = path.stat().st_size
-        sha256.update(str(file_size).encode())
-        
+
+        sha256.update(str(path.stat().st_size).encode())
         hash_value = sha256.hexdigest()
         self._dump_hashes[dump_path] = hash_value
         return hash_value
-    
+
     async def run_plugin(
         self,
         dump_path: str,
         plugin: str,
         args: Optional[Dict[str, Any]] = None,
-        renderer: str = "json"
+        renderer: str = "json",
     ) -> PluginResult:
         cache_key = None
         if self._redis:
@@ -138,13 +122,13 @@ class VolatilityExecutor:
                 elif value is not False and value is not None:
                     cmd.extend([f"--{key}", str(value)])
 
-        print(f"🔧 Running: {' '.join(cmd)}")
+        print(f"🔧 Running: {' '.join(cmd)}", file=sys.stderr)
 
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             _HEAVY_PLUGINS = {"malfind", "linux.malware.malfind.malfind"}
             plugin_timeout = 1800 if any(p in plugin.lower() for p in _HEAVY_PLUGINS) else self.timeout
@@ -179,12 +163,11 @@ class VolatilityExecutor:
         except Exception as e:
             return PluginResult(plugin=plugin, success=False, data=None, error=str(e))
 
-    
     async def run_plugins_parallel(
         self,
         dump_path: str,
         plugins: List[Dict[str, Any]],
-        max_concurrent: int = 3
+        max_concurrent: int = 3,
     ) -> Dict[str, PluginResult]:
         semaphore = asyncio.Semaphore(max_concurrent)
         results = {}
@@ -196,8 +179,10 @@ class VolatilityExecutor:
                 result = await self.run_plugin(dump_path, name, args)
                 return name, result
 
-        tasks = [run_with_semaphore(p) for p in plugins]
-        completed = await asyncio.gather(*tasks, return_exceptions=True)
+        completed = await asyncio.gather(
+            *[run_with_semaphore(p) for p in plugins],
+            return_exceptions=True,
+        )
 
         for item in completed:
             if isinstance(item, Exception):
@@ -210,13 +195,10 @@ class VolatilityExecutor:
     async def detect_os(self, dump_path: str) -> dict:
         win_result = await self.run_plugin(dump_path, "windows.info.Info")
         if win_result.success and win_result.data:
-            info = win_result.data[0] if win_result.data else {}
-            return {"os": "windows", "info": info}
+            return {"os": "windows", "info": win_result.data[0] if win_result.data else {}}
 
         linux_result = await self.run_plugin(dump_path, "banners.Banners")
         if linux_result.success and linux_result.data:
-            info = linux_result.data[0] if linux_result.data else {}
-            return {"os": "linux", "info": info}
+            return {"os": "linux", "info": linux_result.data[0] if linux_result.data else {}}
 
         return {"os": "unknown", "info": {}}
-

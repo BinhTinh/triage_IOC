@@ -1,3 +1,4 @@
+import sys
 import os
 from contextlib import asynccontextmanager
 
@@ -9,7 +10,6 @@ from src.mcp_server.tools.execution import register_execution_tools
 from src.mcp_server.tools.validation import register_validation_tools
 from src.mcp_server.prompts.templates import register_prompts
 from src.mcp_server.resources.plugins import register_plugin_resources
-from src.mcp_server.resources.cases import register_case_resources
 
 _REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
@@ -24,18 +24,14 @@ async def lifespan(app):
         from src.mcp_server.tools.execution import executor
         executor._redis = redis_client
 
-        from src.core.validator import set_redis_client
-        set_redis_client(redis_client)
-
-        print(f"✅ Redis connected: {_REDIS_URL} (L1+L2 cache active)")
+        print(f"✅ Redis connected: {_REDIS_URL}", file=sys.stderr)
     except Exception as e:
-        print(f"⚠️  Redis unavailable ({e}) — running without cache")
+        print(f"⚠️  Redis unavailable ({e}, file=sys.stderr) — running without cache")
 
     yield
 
     if redis_client:
         await redis_client.aclose()
-        print("Redis connection closed")
 
 
 mcp = FastMCP(
@@ -43,10 +39,9 @@ mcp = FastMCP(
     version="2.0.0",
     lifespan=lifespan,
     instructions=(
-        "MCP server for automated IOC extraction from memory dumps using Volatility3. "
-        "Start every session with list_available_dumps → detect_os → smart_triage. "
-        "Never skip detect_os — os_type is required by batch_plugins, compare_processes, and ioc_extract. "
-        "For complete IOC extraction use the full plugin list from smart_triage — do not reduce it."
+        "MCP server for IOC extraction from memory dumps using Volatility3. "
+        "Flow: list_available_dumps → detect_os → smart_triage → batch_plugins → ioc_extract. "
+        "Never skip detect_os — os_type is required by batch_plugins and ioc_extract."
     ),
 )
 
@@ -55,7 +50,6 @@ register_execution_tools(mcp)
 register_validation_tools(mcp)
 register_prompts(mcp)
 register_plugin_resources(mcp)
-register_case_resources(mcp)
 
 
 def run_server(transport: str = "stdio", host: str = "0.0.0.0", port: int = 8000):

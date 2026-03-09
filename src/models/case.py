@@ -4,9 +4,6 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 import uuid
 
-from src.models.attack_chain import AttackChain
-from src.models.behavior import MalwareClassification
-from src.models.timeline import Timeline
 
 
 class CaseStatus(Enum):
@@ -29,9 +26,6 @@ class Case:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    timeline: Optional['Timeline'] = None
-    attack_chain: Optional['AttackChain'] = None
-    malware_classification: Optional['MalwareClassification'] = None
     findings_count: int = 0
     iocs_count: int = 0
     

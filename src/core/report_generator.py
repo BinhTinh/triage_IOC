@@ -8,9 +8,6 @@ from typing import List, Dict, Any, Optional
 from src.models.case import Case
 from src.models.ioc import ValidatedIOC
 from src.config.settings import settings
-from src.models.timeline import Timeline
-from src.core.narrative_generator import NarrativeGenerator
-from src.core.visualization import TextVisualizer
 
 
 @dataclass
@@ -465,6 +462,21 @@ class ReportGenerator:
                 finding_idx += 1
 
             vt_hits = [i for i in suspicious if "VT:" in (i.reason or "")]
+            network_malicious = [i for i in malicious if i.ioc.ioc_type in ("ipv4", "ip")]
+            if network_malicious:
+                rare_port_iocs = [i for i in network_malicious if "rare_port" in i.ioc.context.get("reasons", [])]
+                beaconing_iocs = [i for i in network_malicious if i.ioc.context.get("beaconing")]
+                if rare_port_iocs or beaconing_iocs:
+                    f.write(f" [{finding_idx}] MALICIOUS NETWORK CONNECTIONS DETECTED (T1071)\n")
+                    if rare_port_iocs:
+                        for ioc in rare_port_iocs[:5]:
+                            ctx = ioc.ioc.context
+                            f.write(f"   {ioc.ioc.value}:{ctx.get('remote_port','?')} "
+                                    f"[{ctx.get('process','?')}] via {ioc.ioc.source_plugin}\n")
+                    if beaconing_iocs:
+                        f.write(f"   Beaconing pattern: {len(beaconing_iocs)} IP(s) with repeated connections\n")
+                    f.write("\n")
+                    finding_idx += 1
             for ioc in vt_hits:
                 f.write(f"  [{finding_idx}] KNOWN MALICIOUS HASH\n")
                 f.write(f"      SHA256: {ioc.ioc.value}\n")
@@ -711,10 +723,18 @@ class ReportGenerator:
         critical_count   = sum(1 for t in techniques if t.get("id") in critical_techniques)
         critical_bonus   = critical_count * 5
 
-        injection_iocs   = [i for i in malicious if i.ioc.ioc_type == "injection"]
-        injection_bonus  = min(len(injection_iocs) * 2, 10)
+        injection_iocs = [i for i in malicious if i.ioc.ioc_type == "injection"]
+        injection_bonus = min(len(injection_iocs) * 2, 10)
 
-        score = (base_score * tech_multiplier) + critical_bonus + injection_bonus
+        network_iocs = [i for i in malicious if i.ioc.ioc_type in ("ipv4", "ip")]
+        rare_port_bonus = min(
+            sum(5 for i in network_iocs if "rare_port" in i.ioc.context.get("reasons", [])), 15
+        )
+        beaconing_bonus = min(
+            sum(3 for i in network_iocs if i.ioc.context.get("beaconing")), 10
+        )
+
+        score = (base_score * tech_multiplier) + critical_bonus + injection_bonus + rare_port_bonus + beaconing_bonus
         score = min(100, max(0, int(score)))
 
         if score >= 80:   level = "CRITICAL"
@@ -749,10 +769,25 @@ class ReportGenerator:
             recommendations.append("[IMMEDIATE] Preserve all evidence and memory dumps")
             recommendations.append("[IMMEDIATE] Notify incident response team")
         
-        malicious_ips = [i.ioc.value for i in malicious if i.ioc.ioc_type == "ip"]
+        malicious_ips = [i.ioc.value for i in malicious if i.ioc.ioc_type in ("ip", "ipv4")]
         if malicious_ips:
             recommendations.append(f"[HIGH] Block malicious IPs at firewall: {', '.join(malicious_ips[:5])}")
-        
+
+        beaconing_iocs = [i for i in malicious if i.ioc.context.get("beaconing")]
+        if beaconing_iocs:
+            beacon_ips = list({i.ioc.value for i in beaconing_iocs})
+            recommendations.append(
+                f"[HIGH] Beaconing detected to {len(beacon_ips)} IP(s) — "
+                f"investigate C2 channel: {', '.join(beacon_ips[:3])}"
+            )
+
+        rare_port_iocs = [i for i in malicious if "rare_port" in i.ioc.context.get("reasons", [])]
+        if rare_port_iocs:
+            ports = list({i.ioc.context.get("remote_port") for i in rare_port_iocs})
+            recommendations.append(
+                f"[HIGH] Suspicious ports detected: {ports[:5]} — common C2/RAT/Tor ports"
+            )
+
         malicious_domains = [i.ioc.value for i in malicious if i.ioc.ioc_type == "domain"]
         if malicious_domains:
             recommendations.append(f"[HIGH] Block malicious domains in DNS/proxy: {', '.join(malicious_domains[:5])}")

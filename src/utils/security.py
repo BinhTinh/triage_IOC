@@ -24,7 +24,11 @@ def _build_plugin_indexes() -> Tuple[Set[str], Dict[str, str]]:
     all_full: List[str] = []
     for d in (WINDOWS_PLUGINS, LINUX_PLUGINS, MAC_PLUGINS, GENERIC_PLUGINS):
         for v in d.values():
-            all_full.extend(v)
+            for item in v:
+                if isinstance(item, str):
+                    all_full.append(item)
+                elif isinstance(item, dict) and item.get("name"):
+                    all_full.append(item["name"])
 
     canonical: Set[str] = set(all_full)
 
