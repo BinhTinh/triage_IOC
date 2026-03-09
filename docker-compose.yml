@@ -7,9 +7,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data/dumps:/app/data/dumps:ro
-      - ./data/reports:/app/data/reports
-      - ./data/symbols:/app/data/symbols
+      - ./data:/app/data
       - ./config:/app/config:ro
       - ./volatility3:/app/volatility3:ro
     environment:
