@@ -1,4 +1,5 @@
 from fastmcp import FastMCP, Context
+from datetime import datetime
 
 from src.core.ioc_extractor import ExtractionPipeline
 from src.core.validator import ValidationPipeline
@@ -7,6 +8,7 @@ from src.mcp_server.tools.execution import (
     get_latest_stored_plugin_results,
     get_stored_plugin_results,
 )
+from src.mcp_server.tools.reporting import write_json_report, load_json_report
 
 
 async def _extract_iocs_from_results(
@@ -14,6 +16,8 @@ async def _extract_iocs_from_results(
     plugin_results: dict,
     os_type: str,
     result_id: str | None = None,
+    return_iocs: bool = False,
+    include_preview: bool = False,
 ) -> dict:
     plugin_results = plugin_results or {}
 
@@ -76,7 +80,17 @@ async def _extract_iocs_from_results(
     def _serialize(iocs):
         return [ioc.to_dict() for ioc in sorted(iocs, key=lambda x: -x.confidence)]
 
-    return {
+    def _top_counts(items, key_fn, limit=5):
+        counts = {}
+        for item in items:
+            key = key_fn(item)
+            counts[key] = counts.get(key, 0) + 1
+        return [
+            {"name": name, "count": count}
+            for name, count in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        ]
+
+    full_output = {
         "network_iocs": _serialize(network_iocs),
         "host_iocs": _serialize(host_iocs),
         "result_id": result_id,
@@ -89,6 +103,193 @@ async def _extract_iocs_from_results(
             "low": len(low),
         },
     }
+
+    report_path = write_json_report(
+        prefix="ioc_extract",
+        payload=full_output,
+        result_id=result_id,
+    )
+
+    compact = {
+        "result_id": result_id,
+        "report_path": report_path,
+        "summary": full_output["summary"],
+        "stats": {
+            "top_network_types": _top_counts(network_iocs, lambda i: i.ioc_type),
+            "top_host_types": _top_counts(host_iocs, lambda i: i.ioc_type),
+            "top_network_sources": _top_counts(network_iocs, lambda i: i.source_plugin),
+            "top_host_sources": _top_counts(host_iocs, lambda i: i.source_plugin),
+        },
+        "next_step": "Use ioc_validate_from_report(report_path=<path>)",
+    }
+    if include_preview:
+        compact["preview"] = {
+            "network": _serialize(network_iocs)[:5],
+            "host": _serialize(host_iocs)[:5],
+        }
+    if return_iocs:
+        compact["network_iocs"] = full_output["network_iocs"]
+        compact["host_iocs"] = full_output["host_iocs"]
+    return compact
+
+
+async def _validate_ioc_entries(
+    ctx: Context,
+    network_iocs: list,
+    host_iocs: list,
+    os_type: str = "windows",
+    include_findings: bool = False,
+) -> dict:
+    all_iocs = network_iocs + host_iocs
+    if not all_iocs:
+        return {
+            "malicious": [],
+            "suspicious": [],
+            "benign": [],
+            "summary": {
+                "malicious": 0,
+                "suspicious": 0,
+                "benign": 0,
+                "vt_checked": 0,
+                "deepseek_reasoning": "No IOCs to validate",
+            },
+        }
+
+    await ctx.info(
+        f"Validating {len(all_iocs)} IOCs "
+        f"({len(network_iocs)} network + {len(host_iocs)} host)..."
+    )
+
+    from src.models.ioc import IOC
+
+    ioc_objects: list[IOC] = []
+    parse_errors = 0
+    for entry in all_iocs:
+        try:
+            ioc_objects.append(
+                IOC(
+                    ioc_type=entry.get("type") or entry.get("ioc_type", "unknown"),
+                    value=entry["value"],
+                    confidence=entry.get("confidence", 0.5),
+                    source_plugin=entry.get("source_plugin") or entry.get("source", "unknown"),
+                    context=entry.get("context", {}),
+                    extracted_at=datetime.now(),
+                )
+            )
+        except Exception:
+            parse_errors += 1
+            continue
+
+    if not ioc_objects:
+        return {
+            "malicious": [],
+            "suspicious": [],
+            "benign": [],
+            "summary": {
+                "malicious": 0,
+                "suspicious": 0,
+                "benign": 0,
+                "vt_checked": 0,
+                "deepseek_reasoning": "No valid IOC objects could be parsed",
+                "input_count": len(all_iocs),
+                "parsed_count": 0,
+                "parse_errors": parse_errors,
+                "status": "degraded",
+            },
+            "warning": "Validation skipped because all IOC entries failed parsing",
+        }
+
+    validator = ValidationPipeline(
+        config={
+            "vt_api_key": settings.vt_api_key,
+            "abuse_api_key": settings.abuseipdb_key,
+            "deepseek_api_key": settings.deepseek_api_key,
+        }
+    )
+    try:
+        validated = await validator.validate_batch(ioc_objects, os_type=os_type)
+    except Exception as e:
+        return {
+            "malicious": [],
+            "suspicious": [],
+            "benign": [],
+            "summary": {
+                "malicious": 0,
+                "suspicious": 0,
+                "benign": 0,
+                "vt_checked": 0,
+                "deepseek_reasoning": "Validation pipeline raised an exception",
+                "input_count": len(all_iocs),
+                "parsed_count": len(ioc_objects),
+                "parse_errors": parse_errors,
+                "status": "error",
+            },
+            "error": str(e),
+        }
+    finally:
+        await validator.close()
+
+    malicious = [v for v in validated if v.verdict == "malicious"]
+    suspicious = [v for v in validated if v.verdict == "suspicious"]
+    benign = [v for v in validated if v.verdict == "benign"]
+    vt_checked = sum(1 for v in validated if getattr(v, "vt_checked", False))
+
+    await ctx.info(
+        f"Results: {len(malicious)} malicious, "
+        f"{len(suspicious)} suspicious, {len(benign)} benign | "
+        f"VT checked: {vt_checked}"
+    )
+
+    def _fmt(validated_list):
+        return [
+            {
+                "type": v.ioc.ioc_type,
+                "value": v.ioc.value,
+                "verdict": v.verdict,
+                "confidence": v.final_confidence,
+                "reason": v.reason or "",
+                "source_plugin": v.ioc.source_plugin,
+                "context": v.ioc.context,
+            }
+            for v in sorted(validated_list, key=lambda x: -x.final_confidence)
+        ]
+
+    full_output = {
+        "malicious": _fmt(malicious),
+        "suspicious": _fmt(suspicious),
+        "benign": _fmt(benign),
+        "summary": {
+            "malicious": len(malicious),
+            "suspicious": len(suspicious),
+            "benign": len(benign),
+            "vt_checked": vt_checked,
+            "deepseek_reasoning": getattr(validator, "last_reasoning", ""),
+            "input_count": len(all_iocs),
+            "parsed_count": len(ioc_objects),
+            "parse_errors": parse_errors,
+            "validated_count": len(validated),
+            "status": "ok" if validated else "degraded",
+        },
+        "warning": (
+            "Validation pipeline produced no classified output" if not validated else ""
+        ),
+    }
+
+    report_path = write_json_report(prefix="ioc_validate", payload=full_output)
+    compact = {
+        "report_path": report_path,
+        "summary": full_output["summary"],
+    }
+    if include_findings:
+        compact.update(
+            {
+                "malicious": full_output["malicious"],
+                "suspicious": full_output["suspicious"],
+                "benign": full_output["benign"],
+                "warning": full_output["warning"],
+            }
+        )
+    return compact
 
 
 def register_validation_tools(mcp: FastMCP):
@@ -159,6 +360,8 @@ Layer 2 — Context-aware rules:
         plugin_results: dict | None = None,
         result_id: str | None = None,
         os_type: str = "windows",
+        return_iocs: bool = False,
+        include_preview: bool = False,
     ) -> dict:
         """
         Parameters
@@ -194,6 +397,8 @@ Layer 2 — Context-aware rules:
             plugin_results=plugin_results,
             os_type=os_type,
             result_id=result_id,
+            return_iocs=return_iocs,
+            include_preview=include_preview,
         )
 
     @mcp.tool(
@@ -210,13 +415,16 @@ Use this to avoid sending huge plugin_results payloads over MCP.
 If result_id is omitted, the tool uses the most recently stored run_plugins result.
 
 ## OUTPUT
-Same schema as ioc_extract: network_iocs, host_iocs, summary.
+Compact response by default: summary + report_path + stats.
+Set include_preview=true for top IOC samples, or return_iocs=true for full IOC arrays.
 """,
     )
     async def ioc_extract_from_store(
         ctx: Context,
         result_id: str | None = None,
         os_type: str = "windows",
+        return_iocs: bool = False,
+        include_preview: bool = False,
     ) -> dict:
         await ctx.info("Extracting IOCs from stored plugin results")
 
@@ -262,6 +470,8 @@ Same schema as ioc_extract: network_iocs, host_iocs, summary.
             plugin_results=plugin_results,
             os_type=os_type,
             result_id=resolved_result_id,
+            return_iocs=return_iocs,
+            include_preview=include_preview,
         )
 
     @mcp.tool(
@@ -310,6 +520,7 @@ Layer 3 — VT + AbuseIPDB (only for IOCs with DeepSeek confidence ≥ 0.75):
         network_iocs: list,
         host_iocs: list,
         os_type: str = "windows",
+        include_findings: bool = False,
     ) -> dict:
         """
         Parameters
@@ -321,131 +532,42 @@ Layer 3 — VT + AbuseIPDB (only for IOCs with DeepSeek confidence ≥ 0.75):
         os_type : str
             "windows" or "linux".
         """
-        all_iocs = network_iocs + host_iocs
-        if not all_iocs:
-            return {
-                "malicious":  [],
-                "suspicious": [],
-                "benign":     [],
-                "summary": {
-                    "malicious": 0, "suspicious": 0, "benign": 0,
-                    "vt_checked": 0, "deepseek_reasoning": "No IOCs to validate",
-                },
-            }
-
-        await ctx.info(f"Validating {len(all_iocs)} IOCs "
-                       f"({len(network_iocs)} network + {len(host_iocs)} host)...")
-
-        from src.models.ioc import IOC
-        ioc_objects: list[IOC] = []
-        parse_errors = 0
-        for entry in all_iocs:
-            try:
-                ioc_objects.append(IOC(
-                    ioc_type=entry.get("type") or entry.get("ioc_type", "unknown"),
-                    value=entry["value"],
-                    confidence=entry.get("confidence", 0.5),
-                    source_plugin=entry.get("source_plugin") or entry.get("source", "unknown"),
-                    context=entry.get("context", {}),
-                ))
-            except Exception:
-                parse_errors += 1
-                continue
-
-        if not ioc_objects:
-            return {
-                "malicious": [],
-                "suspicious": [],
-                "benign": [],
-                "summary": {
-                    "malicious": 0,
-                    "suspicious": 0,
-                    "benign": 0,
-                    "vt_checked": 0,
-                    "deepseek_reasoning": "No valid IOC objects could be parsed",
-                    "input_count": len(all_iocs),
-                    "parsed_count": 0,
-                    "parse_errors": parse_errors,
-                    "status": "degraded",
-                },
-                "warning": "Validation skipped because all IOC entries failed parsing",
-            }
-
-        validator = ValidationPipeline(config={
-            "vt_api_key":    settings.vt_api_key,
-            "abuse_api_key": settings.abuseipdb_key,
-            "deepseek_api_key": settings.deepseek_api_key,
-        })
-        try:
-            validated = await validator.validate_batch(ioc_objects, os_type=os_type)
-        except Exception as e:
-            return {
-                "malicious": [],
-                "suspicious": [],
-                "benign": [],
-                "summary": {
-                    "malicious": 0,
-                    "suspicious": 0,
-                    "benign": 0,
-                    "vt_checked": 0,
-                    "deepseek_reasoning": "Validation pipeline raised an exception",
-                    "input_count": len(all_iocs),
-                    "parsed_count": len(ioc_objects),
-                    "parse_errors": parse_errors,
-                    "status": "error",
-                },
-                "error": str(e),
-            }
-        finally:
-            await validator.close()
-
-        malicious  = [v for v in validated if v.verdict == "malicious"]
-        suspicious = [v for v in validated if v.verdict == "suspicious"]
-        benign     = [v for v in validated if v.verdict == "benign"]
-        vt_checked = sum(1 for v in validated if getattr(v, "vt_checked", False))
-
-        await ctx.info(
-            f"Results: {len(malicious)} malicious, "
-            f"{len(suspicious)} suspicious, {len(benign)} benign | "
-            f"VT checked: {vt_checked}"
+        return await _validate_ioc_entries(
+            ctx=ctx,
+            network_iocs=network_iocs,
+            host_iocs=host_iocs,
+            os_type=os_type,
+            include_findings=include_findings,
         )
 
-        if not validated:
-            await ctx.warning(
-                "Validation returned zero entries despite non-empty parsed IOC input"
-            )
+    @mcp.tool(
+        name="ioc_validate_from_report",
+        description="""
+Validate extracted IOCs from an extraction report file under reports/.
 
-        def _fmt(validated_list):
-            return [
-                {
-                    "type":             v.ioc.ioc_type,
-                    "value":            v.ioc.value,
-                    "verdict":          v.verdict,
-                    "confidence":       v.final_confidence,
-                    "reason":           v.reason or "",
-                    "source_plugin":    v.ioc.source_plugin,
-                    "context":          v.ioc.context,
-                }
-                for v in sorted(validated_list, key=lambda x: -x.final_confidence)
-            ]
+Use this to avoid sending IOC arrays over MCP.
 
-        return {
-            "malicious":  _fmt(malicious),
-            "suspicious": _fmt(suspicious),
-            "benign":     _fmt(benign),
-            "summary": {
-                "malicious":          len(malicious),
-                "suspicious":         len(suspicious),
-                "benign":             len(benign),
-                "vt_checked":         vt_checked,
-                "deepseek_reasoning": getattr(validator, "last_reasoning", ""),
-                "input_count":        len(all_iocs),
-                "parsed_count":       len(ioc_objects),
-                "parse_errors":       parse_errors,
-                "validated_count":    len(validated),
-                "status":             "ok" if validated else "degraded",
-            },
-            "warning": (
-                "Validation pipeline produced no classified output" if not validated else ""
-            ),
-        }
+## INPUT
+- report_path: path returned by ioc_extract or ioc_extract_from_store
+- os_type (optional): "windows" | "linux"
+
+## OUTPUT
+Compact validation summary + report_path to full classified findings.
+""",
+    )
+    async def ioc_validate_from_report(
+        ctx: Context,
+        report_path: str,
+        os_type: str = "windows",
+        include_findings: bool = False,
+    ) -> dict:
+        report = load_json_report(report_path)
+        network_iocs = report.get("network_iocs", [])
+        host_iocs = report.get("host_iocs", [])
+        return await _validate_ioc_entries(
+            ctx=ctx,
+            network_iocs=network_iocs,
+            host_iocs=host_iocs,
+            os_type=os_type,
+            include_findings=include_findings,
+        )

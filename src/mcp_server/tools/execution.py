@@ -8,6 +8,7 @@ from fastmcp import FastMCP, Context
 from src.core.volatility_executor import VolatilityExecutor
 from src.utils.security import validate_dump_path, validate_plugin_name, canonicalize_plugin_name
 from src.mcp_server.resources.plugins import WINDOWS_PLUGINS, LINUX_PLUGINS
+from src.mcp_server.tools.reporting import write_json_report
 
 executor = VolatilityExecutor()
 
@@ -233,6 +234,7 @@ Linux host      : pslist, pstree, bash, malfind, check_syscall, check_modules
         os_type: str,
         max_concurrent: int = 3,
         store_only: bool = False,
+        return_payload: bool = False,
     ) -> dict:
         """
         Parameters
@@ -256,21 +258,34 @@ Linux host      : pslist, pstree, bash, malfind, check_syscall, check_modules
         result_id = store_plugin_results(payload, dump_path, os_type)
         await ctx.info(f"Stored run_plugins output as {result_id}")
 
-        if store_only:
-            compact = {
+        report_path = write_json_report(
+            prefix="run_plugins",
+            payload={
                 "result_id": result_id,
-                "total": payload.get("total", 0),
-                "successful": payload.get("successful", 0),
-                "failed": payload.get("failed", 0),
-                "results": payload.get("results", {}),
-                "network_plugins": len(payload.get("network_data", {})),
-                "host_plugins": len(payload.get("host_data", {})),
-                "next_step": "Use get_plugin_results(result_id) or ioc_extract(result_id=<id>)",
-            }
-            return compact
+                "dump_path": dump_path,
+                "os_type": os_type,
+                "payload": payload,
+            },
+            result_id=result_id,
+        )
 
-        payload["result_id"] = result_id
-        return payload
+        compact = {
+            "result_id": result_id,
+            "report_path": report_path,
+            "total": payload.get("total", 0),
+            "successful": payload.get("successful", 0),
+            "failed": payload.get("failed", 0),
+            "results": payload.get("results", {}),
+            "network_plugins": len(payload.get("network_data", {})),
+            "host_plugins": len(payload.get("host_data", {})),
+            "next_step": "Use ioc_extract_from_store(result_id=<id>)",
+        }
+
+        # Backward-compatible escape hatch when inline raw rows are explicitly required.
+        if not store_only and return_payload:
+            compact["payload"] = payload
+
+        return compact
 
     @mcp.tool(
         name="get_plugin_results",
