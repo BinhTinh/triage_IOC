@@ -11,6 +11,7 @@ import json
 
 from src.models.ioc import IOC, ValidatedIOC, ValidationResult
 from src.config.settings import settings
+from src.core.deepseek_validator import DeepSeekValidator
 
 
 try:
@@ -162,14 +163,15 @@ class WhitelistValidator:
     def validate(self, ioc: IOC, os_type: str = "windows") -> ValidationResult:
         is_whitelisted = False
         reason = ""
+        ioc_type = str(ioc.ioc_type).lower()
         
-        if ioc.ioc_type == "ip":
+        if ioc_type in {"ip", "ipv4", "ipv6"}:
             is_whitelisted, reason = self.check_ip(ioc.value)
-        elif ioc.ioc_type == "domain":
+        elif ioc_type == "domain":
             is_whitelisted, reason = self.check_domain(ioc.value)
-        elif ioc.ioc_type in ["md5", "sha1", "sha256", "hash"]:
+        elif ioc_type in ["md5", "sha1", "sha256", "hash"]:
             is_whitelisted, reason = self.check_hash(ioc.value)
-        elif ioc.ioc_type == "process":
+        elif ioc_type == "process":
             is_whitelisted, reason = self.check_process(ioc.value, os_type)
         
         return ValidationResult(
@@ -355,30 +357,38 @@ class AbuseIPDBValidator:
 class ValidationPipeline:
     VT_CONFIDENCE_THRESHOLD = 0.35
     VT_ELIGIBLE_TYPES = {"ip", "ipv4", "domain", "md5", "sha1", "sha256", "hash"}
+    CONTEXT_ONLY_TYPES = {
+        "injection", "process", "command", "pipe",
+        "registry_persistence", "registry_defense_evasion",
+        "registry_credential_access",
+    }
+    EVIDENCE_TYPES = {"ipv4", "ip", "domain", "md5", "sha1", "sha256", "hash", "filepath"}
 
 
     def __init__(self, config: dict, redis_client=None):
         self.whitelist = WhitelistValidator()
+        self.enable_threat_intel = bool(config.get("enable_threat_intel", False))
         self.vt = (
             VirusTotalValidator(config["vt_api_key"], redis_client=redis_client)
-            if config.get("vt_api_key") else None
+            if self.enable_threat_intel and config.get("vt_api_key")
+            else None
         )
         self.abuse = (
             AbuseIPDBValidator(config["abuse_api_key"], redis_client=redis_client)
-            if config.get("abuse_api_key") else None
+            if self.enable_threat_intel and config.get("abuse_api_key")
+            else None
         )
-        self.deepseek = None
-        if config.get("use_deepseek") and config.get("deepseek_api_key"):
-            try:
-                from src.core.deepseek_validator import DeepSeekValidator
-                self.deepseek = DeepSeekValidator(config["deepseek_api_key"])
-            except ImportError:
-                pass
+        self.weights = {"virustotal": 0.4, "abuseipdb": 0.3, "whitelist": 0.3}
 
-        self.weights = (
-            {"deepseek": 0.35, "virustotal": 0.30, "abuseipdb": 0.20, "whitelist": 0.15}
-            if self.deepseek
-            else {"virustotal": 0.4, "abuseipdb": 0.3, "whitelist": 0.3}
+        # DeepSeek for context-only IOC types (injection/process/command)
+        # where VT provides no signal. Blended 40% local + 60% LLM.
+        _ds_key = config.get("deepseek_api_key") or ""
+        _use_ds = config.get("use_deepseek", True)
+        _ds_model = config.get("deepseek_model", "deepseek-chat")
+        self.deepseek = (
+            DeepSeekValidator(api_key=_ds_key, model=_ds_model)
+            if _use_ds and _ds_key
+            else None
         )
 
     def _calculate_final_score(self, results: List[ValidationResult], base_confidence: float) -> float:
@@ -398,6 +408,79 @@ class ValidationPipeline:
     def _generate_reason(self, results: List[ValidationResult]) -> str:
         reasons = [r.reason for r in results if r.reason]
         return " | ".join(reasons) if reasons else "No validation data"
+
+    @staticmethod
+    def _ioc_type_str(ioc: IOC) -> str:
+        return str(ioc.ioc_type).lower()
+
+    def _score_context_only_ioc(self, ioc: IOC) -> float:
+        ioc_type = self._ioc_type_str(ioc)
+        ctx = ioc.context or {}
+        src = str(ioc.source_plugin or "").lower()
+
+        # Start conservative for behavior-only artifacts to reduce one-off false positives.
+        score = max(0.20, min(0.85, float(ioc.confidence) * 0.75))
+
+        if ctx.get("technique"):
+            score += 0.05
+
+        if ioc_type == "injection":
+            if bool(ctx.get("has_pe_header")):
+                score += 0.15
+            protection = str(ctx.get("protection", "")).lower()
+            if "execute_readwrite" in protection or "rwx" in protection:
+                score += 0.10
+            if "malfind" in src or "hollowprocesses" in src:
+                score += 0.05
+
+        if ioc_type == "command":
+            cmd = str(ioc.value or "").lower()
+            high_risk_markers = (
+                "-enc", "frombase64string", "invoke-expression", " iwr ", "iex",
+                "mshta", "certutil", "bitsadmin", "rundll32", "regsvr32",
+            )
+            if any(m in cmd for m in high_risk_markers):
+                score += 0.10
+
+        return min(0.95, score)
+
+    def _apply_correlation_guard(self, items: List[ValidatedIOC]) -> List[ValidatedIOC]:
+        if not items:
+            return items
+
+        evidence_malicious = 0
+        technique_counts: Dict[str, int] = {}
+
+        for item in items:
+            ioc_type = str(item.ioc.ioc_type).lower()
+            if item.verdict == "malicious" and ioc_type in self.EVIDENCE_TYPES:
+                evidence_malicious += 1
+
+            technique = str((item.ioc.context or {}).get("technique", "")).strip()
+            if technique:
+                technique_counts[technique] = technique_counts.get(technique, 0) + 1
+
+        for item in items:
+            ioc_type = str(item.ioc.ioc_type).lower()
+            if item.verdict != "malicious" or ioc_type not in self.CONTEXT_ONLY_TYPES:
+                continue
+
+            technique = str((item.ioc.context or {}).get("technique", "")).strip()
+            repeated_technique = bool(technique and technique_counts.get(technique, 0) >= 2)
+            has_external_support = any(r.source in {"virustotal", "abuseipdb"} for r in item.validation_results)
+
+            # Guardrail: isolated behavior-only malicious alerts are downgraded to suspicious.
+            if not (evidence_malicious > 0 or repeated_technique or has_external_support):
+                item.verdict = "suspicious"
+                item.final_confidence = min(item.final_confidence, 0.69)
+                guard_reason = "Correlation guard: isolated behavior-only finding"
+                if item.reason:
+                    item.reason = f"{item.reason} | {guard_reason}"
+                else:
+                    item.reason = guard_reason
+
+        return items
+
     async def validate_ioc(self, ioc: IOC, os_type: str = "windows") -> ValidatedIOC:
         results: List[ValidationResult] = []
 
@@ -407,40 +490,16 @@ class ValidationPipeline:
                                 verdict="benign", validation_results=[whitelist_result],
                                 reason=whitelist_result.reason)
 
-        deepseek_result = None
-        if self.deepseek:
-            try:
-                ds_analyses = await self.deepseek.analyze_batch([ioc])
-                if ds_analyses:
-                    deepseek_result = ds_analyses[0]
-                    results.append(ValidationResult(
-                        source="deepseek",
-                        is_malicious=deepseek_result.verdict == "malicious",
-                        score=deepseek_result.confidence,
-                        reason=deepseek_result.reasoning,
-                    ))
-            except Exception:
-                pass
-
-        CONTEXT_ONLY_TYPES = {
-            "injection", "process", "command", "pipe",
-            "registry_persistence", "registry_defense_evasion",
-            "registry_credential_access",
-        }
-        if ioc.ioc_type in CONTEXT_ONLY_TYPES:
-            if deepseek_result:
-                score = deepseek_result.confidence
-            else:
-                score = ioc.confidence
+        if self._ioc_type_str(ioc) in self.CONTEXT_ONLY_TYPES:
+            score = self._score_context_only_ioc(ioc)
             return ValidatedIOC(
                 ioc=ioc,
                 final_confidence=score,
                 verdict=self._determine_verdict(score),
                 validation_results=results,
-                reason=(deepseek_result.reasoning if deepseek_result
-                        else f"Context-confirmed (no DeepSeek), extraction confidence={score:.2f}"),
+                reason=f"Context-confirmed, extraction confidence={score:.2f}",
             )
-        skip_vt = (deepseek_result and deepseek_result.confidence >= 0.70)
+        skip_vt = False
 
         vt_result = None
         if self.vt and not skip_vt and ioc.ioc_type in self.VT_ELIGIBLE_TYPES:
@@ -469,13 +528,11 @@ class ValidationPipeline:
 
             if vt_result and vt_result.score >= 0.40:
                 vt_weight = 0.50
-                ds_weight = 0.35 if deepseek_result else 0.0
                 ab_weight = 0.15 if (self.abuse and ioc.ioc_type in ("ip", "ipv4")) else 0.0
-                total_w   = vt_weight + ds_weight + ab_weight
+                total_w   = vt_weight + ab_weight
 
                 final_score = (
                     vt_result.score * vt_weight
-                    + (deepseek_result.confidence * ds_weight if deepseek_result else 0)
                     + (results[-1].score * ab_weight if ab_weight else 0)
                 ) / (total_w or 1)
             else:
@@ -498,7 +555,60 @@ class ValidationPipeline:
             async with semaphore:
                 return await self.validate_ioc(ioc, os_type)
 
-        return await asyncio.gather(*[_run(i) for i in iocs])
+        items = list(await asyncio.gather(*[_run(i) for i in iocs]))
+        items = self._apply_correlation_guard(items)
+
+        # Post-process behavioral IOCs with DeepSeek (no VT signal for these types)
+        if self.deepseek:
+            items = await self._apply_deepseek_scoring(items)
+
+        return items
+
+    async def _apply_deepseek_scoring(
+        self, items: List[ValidatedIOC]
+    ) -> List[ValidatedIOC]:
+        """Blend DeepSeek LLM analysis into context-only IOC verdicts.
+
+        VT/AbuseIPDB provide no signal for injection/process/command IOC types.
+        DeepSeek reads the IOC value + context and provides a verdict + confidence
+        that gets blended 40% local heuristic + 60% LLM.
+        """
+        context_indices = [
+            i for i, item in enumerate(items)
+            if self._ioc_type_str(item.ioc) in self.CONTEXT_ONLY_TYPES
+        ]
+        if not context_indices:
+            return items
+
+        context_iocs = [items[i].ioc for i in context_indices]
+        try:
+            analyses = await self.deepseek.analyze_batch(context_iocs)
+        except Exception:
+            return items  # graceful degradation — local scores already set
+
+        for idx, analysis in zip(context_indices, analyses):
+            item = items[idx]
+            # Blend: 40% local heuristic (already in item.final_confidence), 60% LLM
+            blended = item.final_confidence * 0.4 + analysis.confidence * 0.6
+            item.final_confidence = round(min(0.99, blended), 4)
+            item.verdict = self._determine_verdict(item.final_confidence)
+            item.validation_results.append(
+                ValidationResult(
+                    source="deepseek",
+                    is_malicious=analysis.verdict == "malicious",
+                    score=analysis.confidence,
+                    reason=(analysis.reasoning or "")[:120],
+                    metadata={
+                        "threat_type": analysis.threat_type,
+                        "mitre": analysis.mitre_techniques,
+                    },
+                )
+            )
+            ds_reason = analysis.reasoning or ""
+            if ds_reason:
+                item.reason = f"{item.reason} | DeepSeek: {ds_reason[:80]}"
+
+        return items
 
     
     async def close(self):

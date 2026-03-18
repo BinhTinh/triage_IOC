@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Settings:
+    enable_threat_intel: bool = field(
+        default_factory=lambda: os.getenv("ENABLE_THREAT_INTEL", "false").lower() == "true"
+    )
     vt_api_key: Optional[str] = field(default_factory=lambda: os.getenv("VT_API_KEY"))
     abuseipdb_key: Optional[str] = field(default_factory=lambda: os.getenv("ABUSEIPDB_KEY"))
     deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
@@ -51,9 +54,6 @@ class Settings:
         for dir_attr in ["data_dir", "dumps_dir", "symbols_dir", "reports_dir", "cache_dir", "volatility_cache_dir"]:
             dir_path = Path(getattr(self, dir_attr))
             dir_path.mkdir(parents=True, exist_ok=True)
-
-    use_deepseek_validation: bool = False
-    deepseek_api_key: Optional[str] = None
 
 
 settings = Settings()

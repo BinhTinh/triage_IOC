@@ -271,6 +271,67 @@ def _get_field(entry: Dict[str, Any], *candidates: str) -> str:
     return ""
 
 
+def _looks_like_live_registry_key(raw_key: str) -> bool:
+    if not raw_key:
+        return False
+
+    s = raw_key.strip()
+    sl = s.lower()
+
+    # Ignore filesystem-backed hive artifacts and file paths surfaced by scans.
+    if re.search(r"[a-zA-Z]:\\", s):
+        return False
+    if any(token in sl for token in (".dat\\", ".hve\\", ".log\\")):
+        return False
+    if sl.startswith("\\??\\") or sl.startswith("\\device\\") or sl.startswith("\\systemroot\\"):
+        return False
+
+    return True
+
+
+def _is_authoritative_software_hive(raw_key: str) -> bool:
+    s = raw_key.strip().lower()
+    return bool(
+        s.startswith("hkey_local_machine\\software\\")
+        or s.startswith("hklm\\software\\")
+        or s.startswith("hkey_current_user\\software\\")
+        or s.startswith("hkcu\\software\\")
+        or re.match(r"^hkey_users\\[^\\]+\\software\\", s)
+        or re.match(r"^hku\\[^\\]+\\software\\", s)
+        or s.startswith("\\registry\\machine\\software\\")
+        or re.match(r"^\\registry\\user\\[^\\]+\\software\\", s)
+    )
+
+
+def _is_common_benign_autorun(value_name: str, value_data: str) -> bool:
+    vn = (value_name or "").strip().lower()
+    vd = (value_data or "").strip().lower()
+
+    if not vn:
+        return False
+
+    benign_name_markers = (
+        "onedrive",
+        "onedrivesetup",
+        "teams",
+        "microsoftedgeautolaunch",
+        "securityhealth",
+    )
+    benign_path_markers = (
+        "\\microsoft\\onedrive\\",
+        "\\microsoft\\teams\\",
+        "\\windowsapps\\",
+        "\\program files\\",
+        "\\program files (x86)\\",
+    )
+
+    if any(marker in vn for marker in benign_name_markers):
+        return True
+    if vd and any(marker in vd for marker in benign_path_markers):
+        return True
+    return False
+
+
 class RegistryAnalyzer:
     def analyze(self, registry_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         findings: List[Dict[str, Any]] = []
@@ -282,6 +343,8 @@ class RegistryAnalyzer:
             raw_data  = _get_field(entry, "Data", "data", "ValueData", "value_data", "RegData", "reg_data")
 
             if not raw_key:
+                continue
+            if not _looks_like_live_registry_key(raw_key):
                 continue
 
             normalized_key = _normalize_key(raw_key)
@@ -308,6 +371,15 @@ class RegistryAnalyzer:
 
                 if not matched_data and rule["data_patterns"] is not None:
                     continue
+
+                # Skip noisy container-only Run/RunOnce keys that have no value/data payload.
+                if re.search(r"\\CurrentVersion\\Run(Once)?$", normalized_key, re.IGNORECASE):
+                    if not raw_value and not raw_data:
+                        continue
+                    if not _is_authoritative_software_hive(raw_key):
+                        continue
+                    if _is_common_benign_autorun(raw_value, raw_data):
+                        continue
 
                 confidence = rule["confidence"]
                 if matched_data and rule["data_patterns"]:

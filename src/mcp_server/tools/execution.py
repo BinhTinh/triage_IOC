@@ -1,14 +1,18 @@
 import asyncio
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 import uuid
 from typing import Optional
 
 from fastmcp import FastMCP, Context
 
 from src.core.volatility_executor import VolatilityExecutor
+from src.config.settings import settings
 from src.utils.security import validate_dump_path, validate_plugin_name, canonicalize_plugin_name
 from src.mcp_server.resources.plugins import WINDOWS_PLUGINS, LINUX_PLUGINS
 from src.mcp_server.tools.reporting import write_json_report
+from src.mcp_server.tools.triage import get_cached_os_profile
 
 executor = VolatilityExecutor()
 
@@ -17,6 +21,27 @@ executor = VolatilityExecutor()
 # This avoids forcing huge JSON blobs across the MCP boundary.
 _RESULT_STORE: dict[str, dict] = {}
 _MAX_STORED_RESULTS = 50
+_RESULT_STORE_PATH = Path(settings.reports_dir) / "run_results_store.json"
+
+
+def _load_result_store_from_disk() -> None:
+    if not _RESULT_STORE_PATH.exists():
+        return
+    try:
+        with _RESULT_STORE_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _RESULT_STORE.clear()
+            _RESULT_STORE.update(data)
+    except Exception:
+        # Keep in-memory empty on corruption; fresh writes will heal the file.
+        pass
+
+
+def _save_result_store_to_disk() -> None:
+    _RESULT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _RESULT_STORE_PATH.open("w", encoding="utf-8") as f:
+        json.dump(_RESULT_STORE, f, ensure_ascii=True, indent=2)
 
 
 def _prune_result_store() -> None:
@@ -29,6 +54,7 @@ def _prune_result_store() -> None:
     to_remove = len(_RESULT_STORE) - _MAX_STORED_RESULTS
     for result_id, _ in ordered[:to_remove]:
         _RESULT_STORE.pop(result_id, None)
+    _save_result_store_to_disk()
 
 
 def store_plugin_results(payload: dict, dump_path: str, os_type: str) -> str:
@@ -40,6 +66,7 @@ def store_plugin_results(payload: dict, dump_path: str, os_type: str) -> str:
         "payload": payload,
     }
     _prune_result_store()
+    _save_result_store_to_disk()
     return result_id
 
 
@@ -86,6 +113,9 @@ def get_result_metadata(result_id: str) -> Optional[dict]:
         "network_plugins": len(payload.get("network_data", {})),
         "host_plugins": len(payload.get("host_data", {})),
     }
+
+
+_load_result_store_from_disk()
 
 
 async def _run_plugin(ctx: Context, dump_path: str, plugin: str, args: Optional[dict] = None) -> dict:
@@ -191,42 +221,7 @@ def register_execution_tools(mcp: FastMCP):
 
     @mcp.tool(
         name="run_plugins",
-        description="""
-Run the full plugin preset for a given OS type and return raw data split by IOC category.
-
-## WHEN TO USE
-- After detect_os — this is the ONLY plugin execution tool needed
-- Runs all network plugins + host plugins in parallel automatically
-- Do NOT call run_plugin manually for each plugin — use this instead
-
-## PLUGIN PRESETS
-Windows network : netscan, netstat, handles
-Windows host    : pslist, psscan, cmdline, malfind, hollowprocesses, ldrmodules,
-                  dlllist, filescan, registry.printkey (Run/RunOnce/Services),
-                  registry.userassist, amcache
-Linux network   : sockstat, lsof
-Linux host      : pslist, pstree, bash, malfind, check_syscall, check_modules
-
-## OUTPUT SCHEMA
-{
-  "total": 15,
-  "successful": 14,
-  "failed": 1,
-  "results": {
-    "windows.netscan.NetScan": {"success": true, "rows": 12, "error": null}
-  },
-  "network_data": {
-    "windows.netscan.NetScan": [ {...row...} ]
-  },
-  "host_data": {
-    "windows.malware.malfind.Malfind": [ {...row...} ],
-    "windows.cmdline.CmdLine": [ {...row...} ]
-  }
-}
-
-## NEXT STEP
-→ Pass full output to ioc_extract(plugin_results=<output>, os_type=<os_type>)
-""",
+                description="Run phase 3 plugin preset for an OS and return categorized results; supports store-only mode for large payloads.",
     )
     async def run_plugins(
         ctx: Context,
@@ -255,6 +250,11 @@ Linux host      : pslist, pstree, bash, malfind, check_syscall, check_modules
         validate_dump_path(dump_path)
         await ctx.info(f"Running {os_type} preset plugins on {dump_path}")
         payload = await _run_preset(ctx, dump_path, os_type, max_concurrent)
+        payload["_meta"] = {
+            "dump_path": dump_path,
+            "os_type": os_type,
+            "os_profile": get_cached_os_profile(dump_path) or {"os_type": os_type},
+        }
         result_id = store_plugin_results(payload, dump_path, os_type)
         await ctx.info(f"Stored run_plugins output as {result_id}")
 
@@ -264,6 +264,7 @@ Linux host      : pslist, pstree, bash, malfind, check_syscall, check_modules
                 "result_id": result_id,
                 "dump_path": dump_path,
                 "os_type": os_type,
+                "os_profile": payload.get("_meta", {}).get("os_profile", {}),
                 "payload": payload,
             },
             result_id=result_id,
@@ -287,14 +288,10 @@ Linux host      : pslist, pstree, bash, malfind, check_syscall, check_modules
 
         return compact
 
+
     @mcp.tool(
         name="get_plugin_results",
-        description="""
-Fetch full run_plugins payload by result_id.
-
-Use this after run_plugins(store_only=true), or when you need to replay extraction
-without re-running heavy Volatility plugins.
-""",
+        description="Load a stored run_plugins payload by result_id for replay and downstream phases.",
     )
     async def get_plugin_results(ctx: Context, result_id: str) -> dict:
         payload = get_stored_plugin_results(result_id)
@@ -311,11 +308,7 @@ without re-running heavy Volatility plugins.
 
     @mcp.tool(
         name="summarize_plugin_results",
-        description="""
-Return a readable summary of plugin results by category and row counts.
-
-This is a compact view for triage when raw output is too large.
-""",
+        description="Return compact per-plugin and per-category row counts from stored run results.",
     )
     async def summarize_plugin_results(ctx: Context, result_id: str) -> dict:
         meta = get_result_metadata(result_id)
@@ -346,11 +339,7 @@ This is a compact view for triage when raw output is too large.
 
     @mcp.tool(
         name="inspect_plugin_rows",
-        description="""
-Inspect paginated rows from one plugin inside a stored run_plugins result.
-
-Supports optional text filtering and column projection to keep responses readable.
-""",
+        description="Inspect paginated rows for one stored plugin result with optional filtering and field projection.",
     )
     async def inspect_plugin_rows(
         ctx: Context,
@@ -417,24 +406,7 @@ Supports optional text filtering and column projection to keep responses readabl
 
     @mcp.tool(
         name="run_plugin",
-        description="""
-Execute a single Volatility3 plugin. Use for targeted follow-up investigation only.
-
-## WHEN TO USE
-- Investigating a specific PID found suspicious by ioc_extract
-- Re-running a single failed plugin after run_plugins
-- Ad-hoc deep-dive on a specific registry key or process
-
-## DO NOT USE for initial data collection — use run_plugins instead.
-
-## OUTPUT SCHEMA
-{
-  "success": bool,
-  "plugin":  str,
-  "data":    [ {...row...} ],
-  "error":   str | null
-}
-""",
+                description="Run one Volatility plugin for targeted follow-up, not initial collection.",
     )
     async def run_plugin(
         ctx: Context,

@@ -120,7 +120,13 @@ class DeepSeekValidator:
                     if "usage" in result:
                         usage = result["usage"]
                         self.total_tokens += usage.get("total_tokens", 0)
-                        print(f"[API] In: {usage.get('prompt_tokens',0, file=sys.stderr)} (cache_hit: {usage.get('prompt_cache_hit_tokens',0)}, miss: {usage.get('prompt_cache_miss_tokens',0)}), Out: {usage.get('completion_tokens',0)}")
+                        print(
+                            f"[DeepSeek] In: {usage.get('prompt_tokens', 0)}"
+                            f" (cache_hit: {usage.get('prompt_cache_hit_tokens', 0)},"
+                            f" miss: {usage.get('prompt_cache_miss_tokens', 0)}),"
+                            f" Out: {usage.get('completion_tokens', 0)}",
+                            file=sys.stderr,
+                        )
                     
                     content = result["choices"][0]["message"]["content"].strip()
                     
@@ -187,13 +193,13 @@ class DeepSeekValidator:
         )
     
     async def close(self):
-        if self.deepseek:
+        """Close the underlying aiohttp session."""
+        if self.session and not self.session.closed:
             try:
-                await self.deepseek.close()
+                await self.session.close()
             except Exception:
                 pass
-            finally:
-                self.session = None
+        self.session = None
 
 class HybridValidator:
     def __init__(self, config: Dict[str, Any]):

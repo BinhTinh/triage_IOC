@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import uuid4
 
 from src.config.settings import settings
+from src.utils.security import validate_report_path
 
 
 def write_json_report(prefix: str, payload: dict, result_id: Optional[str] = None) -> str:
@@ -23,6 +24,7 @@ def write_json_report(prefix: str, payload: dict, result_id: Optional[str] = Non
 
 
 def load_json_report(report_path: str) -> dict:
+    validate_report_path(report_path, must_exist=True)
     path = Path(report_path)
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)

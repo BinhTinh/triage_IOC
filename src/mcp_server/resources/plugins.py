@@ -43,7 +43,8 @@ WINDOWS_PLUGINS = {
         {"name": "windows.registry.printkey.PrintKey",             "priority": 3, "ioc_types": ["registry_persistence"],
          "args": {"key": "System\\CurrentControlSet\\Services"}},
         {"name": "windows.registry.userassist.UserAssist",         "priority": 3, "ioc_types": ["filepath", "command"]},
-        {"name": "windows.registry.amcache.Amcache",               "priority": 3, "ioc_types": ["md5", "filepath"]},
+        {"name": "windows.registry.amcache.Amcache",               "priority": 3, "ioc_types": ["md5", "sha1", "filepath"]},
+        {"name": "windows.svcscan.SvcScan",                         "priority": 2, "ioc_types": ["process", "filepath"]},
     ],
 }
 

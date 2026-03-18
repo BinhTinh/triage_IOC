@@ -1,38 +1,56 @@
-# Volatility3 IOC Extraction with MCP Server
+# Automatic Volatility3 Pipeline IOC Extraction with AI Agent
 
-Automated memory forensics platform that extracts Indicators of Compromise (IOCs) from malware-infected memory dumps using Volatility3, powered by Model Context Protocol (MCP) for AI-assisted analysis.
+Automated memory forensics pipeline that runs Volatility3 against Windows memory dumps, extracts Indicators of Compromise (IOCs), and exposes the entire workflow through a **Model Context Protocol (MCP) server** — so an AI agent (Claude Desktop, Cline, etc.) can drive the full analysis interactively.
+
+---
 
 ## What This Does
 
-- **Automated Triage**: Intelligently selects optimal Volatility3 plugins based on analysis goals
-- **IOC Extraction**: Extracts IPs, domains, hashes, processes, registry keys from memory dumps
-- **Threat Validation**: Validates IOCs against VirusTotal, AbuseIPDB with confidence scoring
-- **MITRE Mapping**: Maps findings to ATT&CK techniques automatically
-- **AI Integration**: MCP interface allows Claude/GPT to perform forensic analysis interactively
+| Stage | What happens |
+|-------|-------------|
+| **OS Detection** | Auto-detects Windows version from dump header |
+| **Plugin Execution** | Runs 18 Volatility3 plugins in parallel (network + host) |
+| **IOC Extraction** | Context-aware + regex extraction pipeline |
+| **Threat Validation** | VirusTotal · AbuseIPDB · DeepSeek LLM · Whitelist |
+| **Report Generation** | JSON reports with confidence scores and MITRE tags |
+
+### Detected IOC Types
+
+| IOC Type | Source Plugin | MITRE Technique |
+|----------|--------------|-----------------|
+| Process Injection | `malfind` | T1055 |
+| Process Hollowing | `hollowprocesses` | T1055.012 |
+| Service Persistence | `svcscan` | T1543.003 |
+| DKOM-Hidden Processes | `psscan` vs `pslist` | T1564.001 |
+| C2 Network Traffic | `netscan`, `handles` | T1071 |
+| Suspicious Commands | `cmdline` | T1059 |
+| Registry Persistence | `printkey`, `hivelist` | T1547 |
+| File Hashes (MD5/SHA1/SHA256) | `filescan`, `amcache`, `ldrmodules` | T1204 |
+| Suspicious File Paths | `filescan`, `dlllist` | T1036 |
+
+---
 
 ## Quick Start
 
 ```bash
-# Clone repository
-git clone https://github.com/yourorg/volatility3-ioc-extraction.git
-cd volatility3-ioc-extraction
-
-# Copy environment file
+# 1. Copy and configure environment
 cp .env.example .env
-# Edit .env with your API keys (VT_API_KEY, ABUSEIPDB_KEY)
+# Edit .env — add API keys (VT_API_KEY, ABUSEIPDB_KEY, DEEPSEEK_API_KEY)
 
-# Start services
-docker-compose up -d
+# 2. Place memory dumps
+mkdir -p data/dumps
+cp /path/to/infected.raw data/dumps/
 
-# Verify server is running
+# 3. Start services
+docker compose up -d
+
+# 4. Verify
 curl http://localhost:8000/health
 ```
 
-## Usage
+### Connect an AI Agent
 
-### With Claude Desktop
-
-Add to `claude_desktop_config.json`:
+**Claude Desktop** — add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -45,12 +63,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-Then ask Claude:
-> "Analyze /data/dumps/infected.raw for malware indicators"
-
-### With Cline (VSCode)
-
-Add to settings:
+**Cline (VSCode)** — add to settings:
 
 ```json
 {
@@ -62,142 +75,159 @@ Add to settings:
 }
 ```
 
-### Programmatic API
+Then ask the agent:
+> *"Analyze /data/dumps/infected.raw for malware indicators and give me a full report"*
 
-```python
-from mcp import ClientSession
-from mcp.client.stdio import stdio_client
+---
 
-async with stdio_client(server_params) as (read, write):
-    async with ClientSession(read, write) as session:
-        await session.initialize()
-        
-        # Run intelligent triage
-        result = await session.call_tool(
-            "smart_triage",
-            {"dump_path": "/data/dumps/sample.raw", "goal": "malware_detection"}
-        )
-        
-        # Get validated IOCs
-        iocs = await session.call_tool(
-            "extract_iocs",
-            {"plugin_results": result}
-        )
-```
-
-## Available Tools
+## Available MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `detect_os` | Auto-detect OS from memory dump |
-| `smart_triage` | Get recommended plugins for analysis goal |
-| `run_plugin` | Execute single Volatility3 plugin |
-| `batch_plugins` | Execute multiple plugins in parallel |
-| `extract_iocs` | Extract IOCs from plugin results |
-| `validate_iocs` | Validate IOCs against threat intel |
-| `map_mitre` | Map findings to MITRE ATT&CK |
-| `generate_report` | Generate JSON/PDF report |
-| `win_processes` | Windows process analysis |
-| `win_injection` | Detect Windows code injection |
-| `linux_processes` | Linux process analysis |
-| `linux_rootkit` | Linux rootkit detection |
+| `detect_os` | Auto-detect OS type from memory dump |
+| `run_plugins` | Execute a preset of Volatility3 plugins in parallel |
+| `run_plugin` | Execute a single Volatility3 plugin |
+| `ioc_extract_from_store` | Extract IOCs from stored plugin results |
+| `ioc_validate` | Validate IOCs against VT · AbuseIPDB · DeepSeek |
+| `generate_report` | Generate a JSON analysis report |
 
-## Analysis Goals
+---
 
-| Goal | Description | Est. Time |
-|------|-------------|-----------|
-| `malware_detection` | Find malware indicators | 8-12 min |
-| `incident_response` | IR artifacts | 15-20 min |
-| `quick_triage` | Fast initial scan | 3-5 min |
-| `rootkit_hunt` | Kernel-level threats | 10-15 min |
-| `full_audit` | Complete analysis | 30-45 min |
+## Windows Plugin Preset (18 plugins)
 
-## Output Example
+### Network (3)
+- `windows.netscan.NetScan`
+- `windows.netstat.NetStat`
+- `windows.handles.Handles` ← fallback for Vol3 2.5+ where netscan is unavailable
 
-```json
-{
-  "case_id": "CASE-2026-0128-001",
-  "os": "Windows 10 x64",
-  "threat_level": "HIGH",
-  "iocs": [
-    {
-      "type": "ip",
-      "value": "192.0.2.100",
-      "confidence": 0.85,
-      "context": "C2 connection from malware.exe (PID 1234)",
-      "mitre": ["T1071.001"]
-    }
-  ],
-  "mitre_techniques": [
-    {"id": "T1055", "name": "Process Injection", "count": 3},
-    {"id": "T1071", "name": "Application Layer Protocol", "count": 2}
-  ],
-  "recommendations": [
-    "Block IP 192.0.2.100 at firewall",
-    "Isolate affected host",
-    "Collect additional artifacts"
-  ]
-}
+### Host (15)
+- `windows.pslist.PsList` + `windows.psscan.PsScan` ← hidden process detection
+- `windows.cmdline.CmdLine`
+- `windows.malware.malfind.Malfind`
+- `windows.malware.hollowprocesses.HollowProcesses`
+- `windows.malware.ldrmodules.LdrModules`
+- `windows.dlllist.DllList`
+- `windows.filescan.FileScan`
+- `windows.svcscan.SvcScan`
+- `windows.registry.hivelist.HiveList`
+- `windows.registry.printkey.PrintKey` (Run, RunOnce, Services keys)
+- `windows.registry.userassist.UserAssist`
+- `windows.registry.amcache.Amcache`
+
+---
+
+## IOC Extraction Pipeline
+
 ```
+Memory Dump
+    │
+    ▼
+VolatilityExecutor ──── runs 18 plugins in parallel
+    │
+    ▼
+ExtractionPipeline
+    ├── IOCExtractor          (regex: IPs, hashes, domains, paths)
+    ├── ContextAwareExtractor (structured: injection, services, hidden procs, network)
+    └── RegistryAnalyzer      (persistence, credential access, defense evasion)
+    │
+    ▼
+ValidationPipeline
+    ├── WhitelistValidator    (private IPs, known-good domains, system processes)
+    ├── VirusTotalValidator   (hashes, IPs, domains — cached in Redis)
+    ├── AbuseIPDBValidator    (IP reputation — cached in Redis)
+    ├── DeepSeekValidator     (LLM reasoning for behavioral IOCs)
+    └── CorrelationGuard      (downgrade isolated behavior-only findings)
+    │
+    ▼
+JSON Report  →  data/reports/
+```
+
+---
 
 ## Configuration
 
-### Environment Variables
+### Environment Variables (`.env`)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `VT_API_KEY` | Yes | VirusTotal API key |
-| `ABUSEIPDB_KEY` | Yes | AbuseIPDB API key |
-| `REDIS_URL` | No | Redis connection (default: localhost:6379) |
-| `DATABASE_URL` | No | PostgreSQL connection |
-| `LOG_LEVEL` | No | Logging level (default: INFO) |
+| `VT_API_KEY` | Optional | VirusTotal API key — enables hash/IP/domain lookup |
+| `ABUSEIPDB_KEY` | Optional | AbuseIPDB key — enables IP reputation scoring |
+| `DEEPSEEK_API_KEY` | Optional | DeepSeek key — enables LLM validation of behavioral IOCs |
+| `DEEPSEEK_MODEL` | No | Model to use (default: `deepseek-chat`) |
+| `USE_DEEPSEEK` | No | Enable DeepSeek validation (default: `true`) |
+| `ENABLE_THREAT_INTEL` | No | Enable VT + AbuseIPDB (default: `false`) |
+| `REDIS_URL` | No | Redis connection string (default: `redis://redis:6379`) |
+| `DUMPS_DIR` | No | Directory for memory dumps (default: `/app/data/dumps`) |
+| `STRICT_DOCKER_PATHS` | No | Enforce Docker-only paths (default: `false`) |
+| `LOG_LEVEL` | No | Logging level (default: `INFO`) |
 
-### Plugin Profiles
-
-Edit `config/plugin_profiles.yaml` to customize plugin selection per goal.
+All API keys are optional — the pipeline runs without them using local heuristics only.
 
 ### Whitelist
 
-Edit `config/whitelist.yaml` to add known-good indicators.
+Edit `config/whitelist.yaml` to add known-good IPs, domains, processes, and hashes. The default whitelist already excludes:
+- Private IP ranges (10.x, 172.16–31.x, 192.168.x, 127.x, all IPv6 loopback/link-local)
+- Common Microsoft/Google/CDN domains
+- Standard Windows system processes
+
+---
+
+## Developer Workflow
+
+```bash
+# Live interactive shell (mounts ./src live — no rebuild needed):
+docker compose run --rm dev
+
+# Rebuild after code changes to mcp-server:
+docker compose build mcp-server && docker compose up -d mcp-server
+
+# Run the end-to-end pipeline test against all dumps:
+docker exec volatility3-mcp-server python3 /app/data/e2e_test.py
+
+# Run against a specific dump:
+docker exec volatility3-mcp-server python3 /app/data/e2e_test.py /app/data/dumps/infected.raw
+```
+
+---
+
+## Real Test Results
+
+Tested against two Windows memory dumps:
+
+| Dump | OS | IOCs | Network | Host | Key Findings |
+|------|----|------|---------|------|-------------|
+| `MemoryDump_Lab1.raw` | Windows | 86 | 1 | 85 | 11 injections (T1055), 71 services checked |
+| `mem_phase1.raw` | Windows | 190 | 0 | 190 | 2 hidden processes (T1564.001), 59 SHA1 hashes |
+
+---
 
 ## System Requirements
 
-- Docker 24.0+
-- 16GB RAM minimum (32GB recommended)
-- 100GB storage for dumps and cache
-- Internet access for threat intel APIs
+- **Docker** 24.0+
+- **RAM**: 16 GB minimum (32 GB recommended for large dumps)
+- **Storage**: 50 GB+ for dumps, symbol cache, and plugin output
+- **Internet**: Optional — only needed for VT/AbuseIPDB/DeepSeek validation
 
 ## Supported Platforms
 
-**Memory Dumps:**
+**Memory Dumps (Windows only focus):**
 - Windows 7, 8, 8.1, 10, 11 (x64)
-- Linux kernel 4.x - 6.x (requires symbols)
+- Volatility3 2.x (including 2.5+ where netscan/netstat are unavailable)
 
 **MCP Clients:**
 - Claude Desktop
 - Cline (VSCode)
-- Custom MCP clients
+- Any MCP-compatible client
 
 ## Known Limitations
 
-1. Windows network plugins (netscan/netstat) unavailable in Vol3 2.5+ - uses handles-based approach
-2. Linux analysis requires matching kernel symbols
-3. Free API tiers have rate limits affecting batch validation
-4. Memory dumps >16GB may require additional RAM
+1. **Vol3 2.5+ network**: `netscan`/`netstat` unavailable on newer builds — the pipeline falls back to `handles`-based network extraction automatically
+2. **Symbol requirement**: Volatility3 needs matching symbol packs for the target OS build; symbols are cached after first run
+3. **Large dumps**: Dumps > 16 GB may require additional RAM and longer timeouts
+4. **Free API tiers**: VirusTotal free tier is rate-limited (4 req/min) — Redis caching minimises repeat lookups
 
-## Documentation
-
-- [System Architecture](./system_architecture.md)
-- [Phase 1: Intake & Profiling](./docs/phase1_intake.md)
-- [Phase 2: Plugin Execution](./docs/phase2_execution.md)
-- [Phase 3: IOC Extraction](./docs/phase3_extraction.md)
-- [Phase 4: Validation](./docs/phase4_validation.md)
-- [Phase 5: Presentation](./docs/phase5_presentation.md)
+---
 
 ## License
 
-MIT License - See LICENSE file
-
-## Contributing
-
-See CONTRIBUTING.md for guidelines.
+MIT License — see [LICENSE](./LICENSE)

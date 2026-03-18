@@ -9,6 +9,7 @@ from src.core.registry_analyzer import RegistryAnalyzer
 IOC_PATTERNS: Dict[str, Dict[str, Any]] = {
     IOCType.IPV4: {
         "pattern": r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b",
+        "source_gate": {"netscan", "netstat", "sockstat", "sockscan", "lsof", "cmdline", "bash"},
         "exclude": [
             r"^0\.0\.0\.0$",
             r"^127\.",
@@ -20,6 +21,7 @@ IOC_PATTERNS: Dict[str, Dict[str, Any]] = {
     },
     IOCType.DOMAIN: {
         "pattern": r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b",
+        "source_gate": {"netscan", "netstat", "sockstat", "sockscan", "lsof", "cmdline", "bash"},
         "exclude": [
             r"\.microsoft\.com$",
             r"\.windows\.com$",
@@ -33,9 +35,14 @@ IOC_PATTERNS: Dict[str, Dict[str, Any]] = {
         ],
     },
     IOCType.MD5: {
-    "pattern": r"\b[a-fA-F0-9]{32}\b",
-    "exclude": [],
-    "source_gate": {"amcache", "filescan", "dumpfiles", "ldrmodules", "shimcachemem"},
+        "pattern": r"\b[a-fA-F0-9]{32}\b",
+        "exclude": [],
+        "source_gate": {"amcache", "filescan", "dumpfiles", "ldrmodules", "shimcachemem"},
+    },
+    IOCType.SHA1: {
+        "pattern": r"\b[a-fA-F0-9]{40}\b",
+        "exclude": [],
+        "source_gate": {"amcache", "filescan", "dumpfiles", "ldrmodules", "shimcachemem"},
     },
     IOCType.SHA256: {
         "pattern": r"\b[a-fA-F0-9]{64}\b",
@@ -46,6 +53,7 @@ IOC_PATTERNS: Dict[str, Dict[str, Any]] = {
     IOCType.FILEPATH: {
         "pattern": r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\r\n]*",
         "exclude": [
+            r"^[A-Za-z]:\\$",
             r"^C:\\Windows\\System32\\",
             r"^C:\\Windows\\SysWOW64\\",
             r"^C:\\Program Files\\",
@@ -161,6 +169,8 @@ REGEX_SCAN_PLUGINS: frozenset = frozenset({
     "svcscan", "sockscan", "sockstat", "lsof",
     "userassist", "printkey", "ldrmodules",
     "netscan", "netstat",
+    # Additional plugins that produce text-scannable output
+    "check_syscall", "check_modules", "hidden_modules",
 })
 
 _KNOWN_PROCESS_NAMES: frozenset = frozenset({
@@ -194,11 +204,26 @@ def _get(entry: Dict[str, Any], *keys: str, default: Any = "") -> Any:
 
 
 def _is_private_ip(ip: str) -> bool:
-    return ip.startswith(("0.", "127.", "10.", "192.168.", "172.16.", "172.17.",
-                          "172.18.", "172.19.", "172.20.", "172.21.", "172.22.",
-                          "172.23.", "172.24.", "172.25.", "172.26.", "172.27.",
-                          "172.28.", "172.29.", "172.30.", "172.31.", "169.254.",
-                          "::1", "fe80:"))
+    """Return True for IPs that should never be flagged as external C2."""
+    # IPv4 private / reserved ranges
+    if ip.startswith(("0.", "127.", "10.", "169.254.",
+                      "192.168.",
+                      "172.16.", "172.17.", "172.18.", "172.19.",
+                      "172.20.", "172.21.", "172.22.", "172.23.",
+                      "172.24.", "172.25.", "172.26.", "172.27.",
+                      "172.28.", "172.29.", "172.30.", "172.31.",
+                      "255.")):
+        return True
+    # IPv6 loopback, link-local, and IPv4-mapped IPv6
+    ip_lower = ip.lower()
+    if ip_lower in ("::", "::1"):
+        return True
+    if ip_lower.startswith(("fe80:", "fc", "fd",   # link-local / ULA
+                             "::ffff:",              # IPv4-mapped
+                             "2001:db8:",            # documentation
+                             "ff")):
+        return True
+    return False
 
 
 class IOCExtractor:
@@ -242,6 +267,18 @@ class IOCExtractor:
         iocs: List[IOC] = []
         source_lower = source.lower()
 
+        # Default MITRE technique assigned by IOC type when context-aware
+        # analyzers haven't tagged one (prevents 'unknown' in reports).
+        _DEFAULT_TECHNIQUE: Dict[str, str] = {
+            IOCType.MD5:      "T1204",
+            IOCType.SHA1:     "T1204",
+            IOCType.SHA256:   "T1204",
+            IOCType.FILEPATH: "T1036",
+            IOCType.DOMAIN:   "T1071.001",
+            IOCType.IPV4:     "T1071",
+            IOCType.COMMAND:  "T1059",
+        }
+
         for ioc_type, config in IOC_PATTERNS.items():
             source_gate: Optional[Set[str]] = config.get("source_gate")
             if source_gate and not any(g in source_lower for g in source_gate):
@@ -264,7 +301,11 @@ class IOCExtractor:
                     value=match,
                     confidence=self._confidence_for_type(ioc_type, source),
                     source_plugin=source,
-                    context={"raw_match": True, "from_plugin": source},
+                    context={
+                        "raw_match": True,
+                        "from_plugin": source,
+                        "technique": _DEFAULT_TECHNIQUE.get(ioc_type, ""),
+                    },
                     extracted_at=datetime.now(),
                 ))
 
@@ -388,12 +429,17 @@ class ContextAwareExtractor:
         iocs: List[IOC] = []
         _socket_types = re.compile(r"File", re.IGNORECASE)
         _socket_name  = re.compile(
-            r"\\Device\\(?:Tcp|Udp|RawIp|Afd)|\\Device\\NetBT_Tcpip",
+            r"\\Device\\(?:Tcp|Udp|RawIp|Afd|NetBT_Tcpip)",
             re.IGNORECASE,
         )
         _ip_port = re.compile(
             r"(\d{1,3}(?:\.\d{1,3}){3}):(\d+)\s*->\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d+)",
         )
+        # Collect suspicious PIDs for cross-referencing Afd handles with empty names
+        _suspicious_procs = frozenset({
+            "powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe",
+            "mshta.exe", "regsvr32.exe", "rundll32.exe", "schtasks.exe",
+        })
 
         for entry in handles_data:
             handle_type = str(_get(entry, "Type", "type"))
@@ -401,46 +447,68 @@ class ContextAwareExtractor:
             process     = str(_get(entry, "Process", "process")).lower()
             pid         = _get(entry, "PID", "pid")
 
-            if not _socket_types.match(handle_type):
+            if not _socket_types.search(handle_type):  # search() not match() — handle_type may be "FileObject" etc.
                 continue
-            if not _socket_name.search(name):
-                continue
+
             if process in self._network_whitelist:
                 continue
 
-            m = _ip_port.search(name)
-            if m:
-                remote_ip   = m.group(3)
-                remote_port = int(m.group(4))
-                if _is_private_ip(remote_ip):
-                    continue
+            if _socket_name.search(name):
+                # Handle has a resolved device path — try to extract IP:port
+                m = _ip_port.search(name)
+                if m:
+                    remote_ip   = m.group(3)
+                    remote_port = int(m.group(4))
+                    if _is_private_ip(remote_ip):
+                        continue
 
-                reasons: List[str] = []
-                confidence = 0.55
+                    reasons: List[str] = []
+                    confidence = 0.55
 
-                if remote_port in RARE_PORTS:
-                    reasons.append("rare_port")
-                    confidence = 0.85
-                elif remote_port not in COMMON_LEGITIMATE_PORTS:
-                    reasons.append("uncommon_port")
-                    confidence = 0.65
+                    if remote_port in RARE_PORTS:
+                        reasons.append("rare_port")
+                        confidence = 0.85
+                    elif remote_port not in COMMON_LEGITIMATE_PORTS:
+                        reasons.append("uncommon_port")
+                        confidence = 0.65
 
-                iocs.append(IOC(
-                    ioc_type=IOCType.IPV4,
-                    value=remote_ip,
-                    confidence=confidence,
-                    source_plugin="windows.handles.Handles",
-                    context={
-                        "process":       process,
-                        "pid":           pid,
-                        "remote_port":   remote_port,
-                        "handle_name":   name,
-                        "reasons":       reasons,
-                        "technique":     "T1071",
-                        "category":      "network",
-                    },
-                    extracted_at=datetime.now(),
-                ))
+                    iocs.append(IOC(
+                        ioc_type=IOCType.IPV4,
+                        value=remote_ip,
+                        confidence=confidence,
+                        source_plugin="windows.handles.Handles",
+                        context={
+                            "process":       process,
+                            "pid":           pid,
+                            "remote_port":   remote_port,
+                            "handle_name":   name,
+                            "reasons":       reasons,
+                            "technique":     "T1071",
+                            "category":      "network",
+                        },
+                        extracted_at=datetime.now(),
+                    ))
+
+            elif not name or name in ("", "None"):
+                # Unresolved Afd/socket handle with empty name.
+                # Flag the *process* as a suspicious network actor if it's
+                # a well-known LOLBin — the network connection itself is
+                # confirmed but we can't extract a remote IP.
+                if process in _suspicious_procs:
+                    iocs.append(IOC(
+                        ioc_type=IOCType.PROCESS,
+                        value=f"{process} (PID {pid}) — unresolved socket handle",
+                        confidence=0.65,
+                        source_plugin="windows.handles.Handles",
+                        context={
+                            "process":   process,
+                            "pid":       pid,
+                            "reason":    "lolbin_with_socket_handle",
+                            "technique": "T1071",
+                            "category":  "network",
+                        },
+                        extracted_at=datetime.now(),
+                    ))
 
         return iocs
     
@@ -601,6 +669,195 @@ class ContextAwareExtractor:
         return iocs
 
 
+    def analyze_hollowprocesses(self, hollow_data: List[Dict[str, Any]]) -> List[IOC]:
+        """Dedicated analyzer for windows.malware.hollowprocesses.HollowProcesses (T1055.012).
+
+        HollowProcesses flags processes where the in-memory PE header differs from
+        the on-disk image — classic process hollowing indicator.
+        Fields: PID, Process, VirtualAddress (or Base), Status, File Output.
+        """
+        iocs: List[IOC] = []
+        for entry in hollow_data:
+            pid     = _get(entry, "PID", "pid", "Pid")
+            process = str(_get(entry, "Process", "process", "Name", "name", "ImageFileName"))
+            status  = str(_get(entry, "Status", "status", "Hollowed", "hollowed", "Result"))
+            vaddr   = str(_get(entry, "VirtualAddress", "Base", "base", "Offset", "offset"))
+
+            # Skip entries that explicitly say not hollowed
+            if status.lower() in ("false", "0", "not hollowed", "clean"):
+                continue
+
+            iocs.append(IOC(
+                ioc_type=IOCType.INJECTION,
+                value=f"PID {pid} ({process}) @ {vaddr}",
+                confidence=0.88,
+                source_plugin="windows.malware.hollowprocesses.HollowProcesses",
+                context={
+                    "pid":       pid,
+                    "process":   process,
+                    "vaddr":     vaddr,
+                    "status":    status,
+                    "technique": "T1055.012",
+                    "details":   "Process hollowing — in-memory PE differs from on-disk image",
+                    "category":  "host",
+                },
+                extracted_at=datetime.now(),
+            ))
+        return iocs
+
+
+    def analyze_svcscan(self, svcscan_data: List[Dict[str, Any]]) -> List[IOC]:
+        """Detect suspicious Windows services (T1543.003).
+
+        Only flags services that have at least ONE strong signal:
+          - binary path in a suspicious directory (Temp, AppData, etc.)
+          - non-.exe extension (.bat, .ps1, .vbs, ...)
+          - running with no binary path at all
+
+        The previous 'non_system_root' standalone rule was generating hundreds
+        of false positives for legitimate third-party vendor services.
+        """
+        iocs: List[IOC] = []
+        _suspicious_path = re.compile(
+            r"(?i)(\\Temp\\|\\AppData\\|\\ProgramData\\|\\Users\\Public\\"
+            r"|\\Windows\\Temp\\|\\tmp\\|%temp%|%appdata%)",
+        )
+        _non_exe = re.compile(r"(?i)\.(bat|cmd|vbs|ps1|js|hta|scr|com|pif)")
+        # Kernel/filesystem drivers are legit with .sys extension anywhere
+        _driver_type = re.compile(r"(?i)(kernel|filesys|recognizer|adapter)", re.IGNORECASE)
+
+        for entry in svcscan_data:
+            svc_name     = str(_get(entry, "ServiceName", "Name", "name"))
+            display_name = str(_get(entry, "DisplayName", "display_name"))
+            binary_path  = str(_get(entry, "BinaryPath", "ImagePath", "binary_path", "Binary"))
+            state        = str(_get(entry, "State", "state")).upper()
+            pid          = _get(entry, "PID", "pid", "Pid")
+            svc_type     = str(_get(entry, "Type", "type"))
+
+            # Skip kernel/filesystem driver services — they live in non-standard paths legitimately
+            if _driver_type.search(svc_type):
+                continue
+
+            if not binary_path or binary_path in ("", "None"):
+                # Running service with no binary path is always suspicious
+                if state == "RUNNING":
+                    iocs.append(IOC(
+                        ioc_type=IOCType.PROCESS,
+                        value=svc_name,
+                        confidence=0.75,
+                        source_plugin="windows.svcscan.SvcScan",
+                        context={
+                            "service_name":  svc_name,
+                            "display_name":  display_name,
+                            "binary_path":   "(empty)",
+                            "state":         state,
+                            "pid":           pid,
+                            "technique":     "T1543.003",
+                            "reason":        "running_service_no_binary",
+                            "category":      "host",
+                        },
+                        extracted_at=datetime.now(),
+                    ))
+                continue
+
+            reasons: List[str] = []
+            confidence = 0.0
+
+            if _suspicious_path.search(binary_path):
+                reasons.append("suspicious_path")
+                confidence = max(confidence, 0.85)
+
+            if _non_exe.search(binary_path):
+                reasons.append("non_exe_extension")
+                confidence = max(confidence, 0.80)
+
+            # REMOVED: non_system_root standalone — too many false positives
+            # Only emit an IOC when at least one strong signal fires
+            if not reasons or confidence == 0.0:
+                continue
+
+            # Boost confidence if the service is actively running
+            if state == "RUNNING":
+                confidence = min(confidence + 0.10, 0.95)
+                reasons.append("service_running")
+
+            iocs.append(IOC(
+                ioc_type=IOCType.PROCESS,
+                value=svc_name,
+                confidence=confidence,
+                source_plugin="windows.svcscan.SvcScan",
+                context={
+                    "service_name":  svc_name,
+                    "display_name":  display_name,
+                    "binary_path":   binary_path,
+                    "state":         state,
+                    "pid":           pid,
+                    "svc_type":      svc_type,
+                    "reasons":       reasons,
+                    "technique":     "T1543.003",
+                    "category":      "host",
+                },
+                extracted_at=datetime.now(),
+            ))
+
+        return iocs
+
+
+    def analyze_hidden_processes(
+        self,
+        pslist_data: List[Dict[str, Any]],
+        psscan_data: List[Dict[str, Any]],
+    ) -> List[IOC]:
+        """Detect rootkit-hidden processes by diffing pslist vs psscan (T1564.001).
+
+        Skips processes that have a non-null ExitTime — these are terminated
+        processes still in RAM, not rootkit-hidden ones.
+        """
+        iocs: List[IOC] = []
+
+        pslist_pids: Set[Any] = set()
+        for proc in pslist_data:
+            pid = _get(proc, "PID", "pid", "Pid")
+            if pid is not None:
+                pslist_pids.add(str(pid))
+
+        for proc in psscan_data:
+            pid      = _get(proc, "PID", "pid", "Pid")
+            process  = str(_get(proc, "ImageFileName", "Name", "name", "process"))
+            offset   = str(_get(proc, "Offset", "offset", "PhysOffset"))
+            # ExitTime non-null/non-zero means the process terminated normally
+            exit_time = str(_get(proc, "ExitTime", "exit_time", "Exited", default=""))
+
+            if pid is None:
+                continue
+            if str(pid) in pslist_pids:
+                continue  # visible in pslist — normal
+
+            # Terminated process still in physical memory — NOT rootkit-hidden
+            if exit_time and exit_time not in ("", "None", "0", "N/A",
+                                               "1970-01-01 00:00:00",
+                                               "1970-01-01T00:00:00"):
+                continue
+
+            iocs.append(IOC(
+                ioc_type=IOCType.PROCESS,
+                value=f"{process} (PID {pid})",
+                confidence=0.92,
+                source_plugin="windows.psscan.PsScan",
+                context={
+                    "pid":       pid,
+                    "process":   process,
+                    "offset":    offset,
+                    "technique": "T1564.001",
+                    "details":   "Process in psscan but not pslist — likely DKOM-hidden by rootkit",
+                    "category":  "host",
+                },
+                extracted_at=datetime.now(),
+            ))
+
+        return iocs
+
+
 class ExtractionPipeline:
     def __init__(self, os_type: str) -> None:
         self.os_type = os_type
@@ -611,8 +868,9 @@ class ExtractionPipeline:
     def _find(self, plugin_results: Dict[str, Any], *keywords: str) -> Optional[List[Dict[str, Any]]]:
         kw_lower = [k.lower() for k in keywords]
         for key, value in plugin_results.items():
-            key_lower = key.lower()
-            if any(kw in key_lower for kw in kw_lower):
+            # Strip the args-hash suffix (e.g. "windows.handles.Handles#abc123" → "windows.handles.Handles")
+            key_normalized = key.lower().split("#")[0]
+            if any(kw in key_normalized for kw in kw_lower):
                 if isinstance(value, list):
                     return value
                 if isinstance(value, dict):
@@ -643,9 +901,15 @@ class ExtractionPipeline:
         if cmdline_data:
             all_iocs.extend(self.context_extractor.analyze_cmdlines(cmdline_data))
 
-        malfind_data = self._find(plugin_results, "malfind", "hollowprocesses")
+        malfind_data = self._find(plugin_results, "malfind")
         if malfind_data:
             all_iocs.extend(self.context_extractor.analyze_malfind(malfind_data))
+
+        # Hollow processes get a dedicated analyzer (T1055.012) rather than
+        # being lumped in with malfind — different output fields, different confidence.
+        hollow_data = self._find(plugin_results, "hollowprocesses")
+        if hollow_data:
+            all_iocs.extend(self.context_extractor.analyze_hollowprocesses(hollow_data))
 
         if self.os_type == "windows":
             suspicious_pids: Set[Any] = set()
@@ -661,6 +925,25 @@ class ExtractionPipeline:
             netstat_data = self._find(plugin_results, "netstat")
             if netstat_data:
                 all_iocs.extend(self.context_extractor.analyze_netscan(netstat_data, suspicious_pids))
+
+            # Vol3 2.5+: netscan/netstat are unavailable; use handles-based network extraction
+            # as the primary fallback. Always run this — it captures sockets netscan misses.
+            handles_data = self._find(plugin_results, "handles")
+            if handles_data:
+                all_iocs.extend(self.context_extractor.analyze_handles_network(handles_data))
+
+            # Hidden process detection: psscan PIDs not in pslist = rootkit (T1564.001)
+            psscan_data = self._find(plugin_results, "psscan")
+            if pslist_data and psscan_data:
+                all_iocs.extend(
+                    self.context_extractor.analyze_hidden_processes(pslist_data, psscan_data)
+                )
+
+            # Service-based persistence (T1543.003)
+            svcscan_data = self._find(plugin_results, "svcscan")
+            if svcscan_data:
+                all_iocs.extend(self.context_extractor.analyze_svcscan(svcscan_data))
+
         else:
             sockstat_data = self._find(plugin_results, "sockstat", "sockscan")
             if sockstat_data:
@@ -668,7 +951,7 @@ class ExtractionPipeline:
 
         registry_entries: List[Dict[str, Any]] = []
         for key, value in plugin_results.items():
-            if "registry" in key.lower() or "printkey" in key.lower() or "amcache" in key.lower():
+            if "registry" in key.lower() or "printkey" in key.lower():
                 if value:
                     entries = value if isinstance(value, list) else [value]
                     registry_entries.extend(entries)

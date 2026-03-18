@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,42 @@ from src.core.volatility_executor import VolatilityExecutor
 from src.utils.security import validate_dump_path
 
 executor = VolatilityExecutor()
+
+_OS_PROFILE_CACHE_PATH = Path(settings.reports_dir) / "os_profile_cache.json"
+
+
+def _load_os_profile_cache() -> dict:
+    if not _OS_PROFILE_CACHE_PATH.exists():
+        return {}
+    try:
+        with _OS_PROFILE_CACHE_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_os_profile_cache(cache: dict) -> None:
+    _OS_PROFILE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _OS_PROFILE_CACHE_PATH.open("w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=True, indent=2)
+
+
+def cache_os_profile(dump_path: str, profile: dict) -> None:
+    cache = _load_os_profile_cache()
+    cache[dump_path] = {
+        **profile,
+        "cached_at": datetime.now().isoformat(),
+    }
+    _save_os_profile_cache(cache)
+
+
+def get_cached_os_profile(dump_path: str) -> Optional[dict]:
+    cache = _load_os_profile_cache()
+    value = cache.get(dump_path)
+    if isinstance(value, dict):
+        return value
+    return None
 
 
 async def _detect_os_helper(dump_path: str) -> dict:
@@ -41,44 +78,7 @@ def register_triage_tools(mcp: FastMCP):
 
     @mcp.tool(
         name="list_dumps",
-        description="""
-List all memory dump files available for analysis.
-
-## WHEN TO USE
-First tool to call in every session — discovers dump files automatically.
-Never ask the user for a file path.
-
-## DIRECTORY
-Default: /app/data/dumps/ (override via DUMPS_DIR env var)
-Scanned recursively.
-
-## SUPPORTED FORMATS
-.raw .dmp .mem .vmem .lime .img
-
-## OUTPUT SCHEMA
-{
-  "dumps_directory": "/app/data/dumps",
-  "available": true,
-  "total_files": 2,
-  "files": [
-    {
-      "filename": "infected.raw",
-      "path":     "/app/data/dumps/infected.raw",
-      "size_bytes": 4294967296,
-      "size_human": "4.00 GB",
-      "modified":   "2026-03-07T10:00:00"
-    }
-  ]
-}
-
-## SELECTION RULE
-- total_files == 1 → use it directly
-- total_files  > 1 → pick most recently modified
-- total_files == 0 → stop, report no dumps found
-
-## NEXT STEP
-→ detect_os(dump_path=files[0]["path"])
-""",
+                description="List dump files under /app/data/dumps and return metadata for phase 1 discovery.",
     )
     async def list_dumps(ctx: Context) -> dict:
         dumps_dir = Path(settings.dumps_dir)
@@ -117,29 +117,7 @@ Scanned recursively.
 
     @mcp.tool(
         name="detect_os",
-        description="""
-Identify OS type, version, and architecture from a memory dump.
-
-## WHY MANDATORY
-All plugins are OS-specific. Wrong os_type = immediate plugin failure.
-Must be called before run_plugins or ioc_extract.
-
-## DETECTION STRATEGY
-1. windows.info.Info   → success = Windows (extracts version + build + arch)
-2. banners.Banners     → parse "Linux version X.Y.Z"
-3. Fallback            → assume Windows
-
-## OUTPUT SCHEMA
-{
-  "os_type": "windows",  // "windows" | "linux"
-  "version": "10",       // NtMajorVersion | kernel X.Y.Z
-  "build":   "19041",    // NtBuildNumber  | null for Linux
-  "arch":    "x64"       // "x64" | "x86"
-}
-
-## NEXT STEP
-→ run_plugins(dump_path=<dump_path>, os_type=result["os_type"])
-""",
+                description="Detect dump OS profile (os_type/version/build/arch) for phase 2 and plugin routing.",
     )
     async def detect_os(ctx: Context, dump_path: str) -> dict:
         """
@@ -150,4 +128,6 @@ Must be called before run_plugins or ioc_extract.
         """
         validate_dump_path(dump_path)
         await ctx.info(f"Detecting OS: {dump_path}")
-        return await _detect_os_helper(dump_path)
+        result = await _detect_os_helper(dump_path)
+        cache_os_profile(dump_path, result)
+        return result

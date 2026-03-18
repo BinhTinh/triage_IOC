@@ -39,10 +39,11 @@ mcp = FastMCP(
     version="2.0.0",
     lifespan=lifespan,
     instructions=(
-        "MCP server for IOC extraction from memory dumps using Volatility3. "
-        "Flow: list_dumps → detect_os → run_plugins → ioc_extract → ioc_validate. "
-        "Use run_plugins(store_only=true) + result_id tools for large outputs. "
-        "Never skip detect_os — os_type is required by run_plugins and ioc_extract."
+        "Volatility3 IOC MCP server. "
+        "Flow: list_dumps -> detect_os -> run_plugins(store_only=true) -> "
+        "ioc_extract_from_store -> ioc_validate_from_report -> forensic_report_from_validation. "
+        "Use Docker paths only (/app/data/dumps, /app/data/reports). "
+        "Never skip detect_os."
     ),
 )
 
