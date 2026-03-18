@@ -11,7 +11,7 @@ Automated memory forensics pipeline that runs Volatility3 against Windows memory
 | **OS Detection** | Auto-detects Windows version from dump header |
 | **Plugin Execution** | Runs 18 Volatility3 plugins in parallel (network + host) |
 | **IOC Extraction** | Context-aware + regex extraction pipeline |
-| **Threat Validation** | VirusTotal · AbuseIPDB · DeepSeek LLM · Whitelist |
+| **Threat Validation** | VirusTotal · AbuseIPDB · Whitelist |
 | **Report Generation** | JSON reports with confidence scores and MITRE tags |
 
 ### Detected IOC Types
@@ -135,7 +135,6 @@ ValidationPipeline
     ├── WhitelistValidator    (private IPs, known-good domains, system processes)
     ├── VirusTotalValidator   (hashes, IPs, domains — cached in Redis)
     ├── AbuseIPDBValidator    (IP reputation — cached in Redis)
-    ├── DeepSeekValidator     (LLM reasoning for behavioral IOCs)
     └── CorrelationGuard      (downgrade isolated behavior-only findings)
     │
     ▼
@@ -152,9 +151,6 @@ JSON Report  →  data/reports/
 |----------|----------|-------------|
 | `VT_API_KEY` | Optional | VirusTotal API key — enables hash/IP/domain lookup |
 | `ABUSEIPDB_KEY` | Optional | AbuseIPDB key — enables IP reputation scoring |
-| `DEEPSEEK_API_KEY` | Optional | DeepSeek key — enables LLM validation of behavioral IOCs |
-| `DEEPSEEK_MODEL` | No | Model to use (default: `deepseek-chat`) |
-| `USE_DEEPSEEK` | No | Enable DeepSeek validation (default: `true`) |
 | `ENABLE_THREAT_INTEL` | No | Enable VT + AbuseIPDB (default: `false`) |
 | `REDIS_URL` | No | Redis connection string (default: `redis://redis:6379`) |
 | `DUMPS_DIR` | No | Directory for memory dumps (default: `/app/data/dumps`) |

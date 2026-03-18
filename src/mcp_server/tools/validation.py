@@ -346,9 +346,14 @@ async def _extract_iocs_from_results(
             for name, count in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
         ]
 
+    from src.core.ioc_extractor import group_iocs_by_process
+    process_groups, unattributed = group_iocs_by_process(all_iocs)
+
     full_output = {
         "network_iocs": _serialize(network_iocs),
         "host_iocs": _serialize(host_iocs),
+        "by_process": [g.to_dict() for g in process_groups],
+        "unattributed_count": len(unattributed),
         "result_id": result_id,
         "system_profile": source_system_profile,
         "summary": {
@@ -358,6 +363,8 @@ async def _extract_iocs_from_results(
             "high": len(high),
             "medium": len(medium),
             "low": len(low),
+            "process_groups": len(process_groups),
+            "unattributed": len(unattributed),
         },
     }
 
@@ -372,6 +379,7 @@ async def _extract_iocs_from_results(
         "report_path": report_path,
         "system_profile": source_system_profile,
         "summary": full_output["summary"],
+        "by_process": [g.to_dict() for g in process_groups[:10]],  # top-10 in compact response
         "stats": {
             "top_network_types": _top_counts(network_iocs, lambda i: i.ioc_type),
             "top_host_types": _top_counts(host_iocs, lambda i: i.ioc_type),
@@ -461,9 +469,6 @@ async def _validate_ioc_entries(
             "enable_threat_intel": settings.enable_threat_intel,
             "vt_api_key": settings.vt_api_key,
             "abuse_api_key": settings.abuseipdb_key,
-            "deepseek_api_key": settings.deepseek_api_key,
-            "use_deepseek": settings.use_deepseek,
-            "deepseek_model": settings.deepseek_model,
         }
     )
     try:
@@ -513,10 +518,15 @@ async def _validate_ioc_entries(
             for v in sorted(validated_list, key=lambda x: -x.final_confidence)
         ]
 
+    from src.core.ioc_extractor import group_iocs_by_process
+    process_groups, unattributed = group_iocs_by_process([v.ioc for v in validated])
+
     full_output = {
         "malicious": _fmt(malicious),
         "suspicious": _fmt(suspicious),
         "benign": _fmt(benign),
+        "by_process": [g.to_dict() for g in process_groups],
+        "unattributed_count": len(unattributed),
         "summary": {
             "malicious": len(malicious),
             "suspicious": len(suspicious),
@@ -526,6 +536,8 @@ async def _validate_ioc_entries(
             "parsed_count": len(ioc_objects),
             "parse_errors": parse_errors,
             "validated_count": len(validated),
+            "process_groups": len(process_groups),
+            "unattributed": len(unattributed),
             "status": "ok" if validated else "degraded",
         },
         "warning": (
@@ -549,6 +561,7 @@ async def _validate_ioc_entries(
         "summary": full_output["summary"],
         "system_profile": full_output["system_profile"],
         "malware_assessment": full_output["malware_assessment"],
+        "by_process": [g.to_dict() for g in process_groups[:10]],  # top-10 in compact response
     }
     if include_findings:
         compact.update(

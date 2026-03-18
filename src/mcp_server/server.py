@@ -39,11 +39,41 @@ mcp = FastMCP(
     version="2.0.0",
     lifespan=lifespan,
     instructions=(
-        "Volatility3 IOC MCP server. "
-        "Flow: list_dumps -> detect_os -> run_plugins(store_only=true) -> "
-        "ioc_extract_from_store -> ioc_validate_from_report -> forensic_report_from_validation. "
-        "Use Docker paths only (/app/data/dumps, /app/data/reports). "
-        "Never skip detect_os."
+        "# Volatility3 Windows IOC Extraction Server\n\n"
+
+        "## 6-Phase Pipeline (always execute in order)\n"
+        "1. `list_dumps()` — discover dump files in /app/data/dumps/\n"
+        "2. `detect_os(dump_path)` — identify os_type; NEVER skip\n"
+        "3. `run_plugins(dump_path, os_type, store_only=true)` → result_id\n"
+        "4. `ioc_extract_from_store(result_id, os_type)` → ioc report_path\n"
+        "5. `ioc_validate_from_report(report_path, os_type)` → validated report_path\n"
+        "6. `forensic_report_from_validation(report_path)` → final forensic report\n\n"
+
+        "## Key Output: by_process\n"
+        "Phases 4 and 5 both return `by_process`: a list of process groups sorted "
+        "by threat_score descending. Each group has: process, pid, threat_level "
+        "(HIGH/MEDIUM/LOW), threat_score (0.0-1.0), techniques (MITRE list), "
+        "ioc_count, and iocs[]. HIGH = threat_score >= 0.75. "
+        "Always report the top dangerous processes to the user.\n\n"
+
+        "## Path Rules\n"
+        "Use POSIX Docker paths only — never Windows paths.\n"
+        "Dumps: /app/data/dumps/ | Reports: /app/data/reports/\n\n"
+
+        "## Validation\n"
+        "Whitelist always runs. VT/AbuseIPDB only when API keys are configured. "
+        "Verdicts: malicious (>=0.70), suspicious (0.40-0.69), benign (<0.40).\n\n"
+
+        "## IOC Types Extracted\n"
+        "injection (T1055), hollowing (T1055.012), hidden-process (T1564.001), "
+        "service-persistence (T1543.003), C2-network (T1071), "
+        "command (T1059), hashes/MD5/SHA1/SHA256 (T1204), "
+        "filepath (T1036), registry-persistence (T1547).\n\n"
+
+        "## Full Guide\n"
+        "Call prompt `ioc_extraction_workflow` for the complete phase-by-phase guide "
+        "with examples, error handling, and MITRE mapping table.\n"
+        "Call prompt `ioc_reference` for the compact tool cheat sheet."
     ),
 )
 

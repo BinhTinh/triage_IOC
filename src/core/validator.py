@@ -11,7 +11,6 @@ import json
 
 from src.models.ioc import IOC, ValidatedIOC, ValidationResult
 from src.config.settings import settings
-from src.core.deepseek_validator import DeepSeekValidator
 
 
 try:
@@ -380,17 +379,6 @@ class ValidationPipeline:
         )
         self.weights = {"virustotal": 0.4, "abuseipdb": 0.3, "whitelist": 0.3}
 
-        # DeepSeek for context-only IOC types (injection/process/command)
-        # where VT provides no signal. Blended 40% local + 60% LLM.
-        _ds_key = config.get("deepseek_api_key") or ""
-        _use_ds = config.get("use_deepseek", True)
-        _ds_model = config.get("deepseek_model", "deepseek-chat")
-        self.deepseek = (
-            DeepSeekValidator(api_key=_ds_key, model=_ds_model)
-            if _use_ds and _ds_key
-            else None
-        )
-
     def _calculate_final_score(self, results: List[ValidationResult], base_confidence: float) -> float:
         if not results:
             return base_confidence
@@ -556,59 +544,7 @@ class ValidationPipeline:
                 return await self.validate_ioc(ioc, os_type)
 
         items = list(await asyncio.gather(*[_run(i) for i in iocs]))
-        items = self._apply_correlation_guard(items)
-
-        # Post-process behavioral IOCs with DeepSeek (no VT signal for these types)
-        if self.deepseek:
-            items = await self._apply_deepseek_scoring(items)
-
-        return items
-
-    async def _apply_deepseek_scoring(
-        self, items: List[ValidatedIOC]
-    ) -> List[ValidatedIOC]:
-        """Blend DeepSeek LLM analysis into context-only IOC verdicts.
-
-        VT/AbuseIPDB provide no signal for injection/process/command IOC types.
-        DeepSeek reads the IOC value + context and provides a verdict + confidence
-        that gets blended 40% local heuristic + 60% LLM.
-        """
-        context_indices = [
-            i for i, item in enumerate(items)
-            if self._ioc_type_str(item.ioc) in self.CONTEXT_ONLY_TYPES
-        ]
-        if not context_indices:
-            return items
-
-        context_iocs = [items[i].ioc for i in context_indices]
-        try:
-            analyses = await self.deepseek.analyze_batch(context_iocs)
-        except Exception:
-            return items  # graceful degradation — local scores already set
-
-        for idx, analysis in zip(context_indices, analyses):
-            item = items[idx]
-            # Blend: 40% local heuristic (already in item.final_confidence), 60% LLM
-            blended = item.final_confidence * 0.4 + analysis.confidence * 0.6
-            item.final_confidence = round(min(0.99, blended), 4)
-            item.verdict = self._determine_verdict(item.final_confidence)
-            item.validation_results.append(
-                ValidationResult(
-                    source="deepseek",
-                    is_malicious=analysis.verdict == "malicious",
-                    score=analysis.confidence,
-                    reason=(analysis.reasoning or "")[:120],
-                    metadata={
-                        "threat_type": analysis.threat_type,
-                        "mitre": analysis.mitre_techniques,
-                    },
-                )
-            )
-            ds_reason = analysis.reasoning or ""
-            if ds_reason:
-                item.reason = f"{item.reason} | DeepSeek: {ds_reason[:80]}"
-
-        return items
+        return self._apply_correlation_guard(items)
 
     
     async def close(self):
@@ -616,8 +552,6 @@ class ValidationPipeline:
             await self.vt.close()
         if self.abuse:
             await self.abuse.close()
-        if self.deepseek:
-            await self.deepseek.close()
 
 
     _shared_redis = None

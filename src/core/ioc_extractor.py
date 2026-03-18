@@ -995,3 +995,109 @@ class ExtractionPipeline:
 
     def reset(self) -> None:
         self.regex_extractor.reset()
+
+
+# ---------------------------------------------------------------------------
+# Per-Process IOC Grouping
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dc, field as _field
+
+@_dc
+class ProcessGroup:
+    """All IOCs attributed to a single process (PID + name).
+
+    Computed properties give the analyst a one-glance threat verdict:
+      - threat_score   — highest confidence IOC in this group
+      - threat_level   — HIGH / MEDIUM / LOW
+      - techniques     — deduplicated, sorted MITRE technique list
+    """
+    pid:          Any
+    process_name: str
+    iocs:         List[IOC] = _field(default_factory=list)
+
+    @property
+    def threat_score(self) -> float:
+        return max((i.confidence for i in self.iocs), default=0.0)
+
+    @property
+    def threat_level(self) -> str:
+        s = self.threat_score
+        if s >= 0.75:  return "HIGH"
+        if s >= 0.50:  return "MEDIUM"
+        return "LOW"
+
+    @property
+    def techniques(self) -> List[str]:
+        seen: Set[str] = set()
+        result: List[str] = []
+        for ioc in self.iocs:
+            t = str(ioc.context.get("technique", "")).strip()
+            if t and t not in seen:
+                seen.add(t)
+                result.append(t)
+        return sorted(result)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "process":     self.process_name,
+            "pid":         self.pid,
+            "threat_level": self.threat_level,
+            "threat_score": round(self.threat_score, 3),
+            "techniques":  self.techniques,
+            "ioc_count":   len(self.iocs),
+            "iocs": [
+                {
+                    "type":       str(i.ioc_type),
+                    "value":      i.value,
+                    "confidence": round(i.confidence, 3),
+                    "technique":  i.context.get("technique", ""),
+                    "source":     i.source_plugin or "",
+                    "reason":     i.context.get("reason", "")
+                                  or ", ".join(i.context.get("reasons", [])),
+                }
+                for i in sorted(self.iocs, key=lambda x: -x.confidence)
+            ],
+        }
+
+
+def group_iocs_by_process(
+    iocs: List[IOC],
+) -> tuple:  # (List[ProcessGroup], List[IOC])
+    """Group IOCs by the process that produced them.
+
+    Returns
+    -------
+    (process_groups, unattributed_iocs)
+        process_groups    — sorted by threat_score descending
+        unattributed_iocs — IOCs with no PID/process context
+                            (e.g. regex-scanned hashes from filescan)
+    """
+    groups: Dict[str, "ProcessGroup"] = {}
+    unattributed: List[IOC] = []
+
+    for ioc in iocs:
+        ctx = ioc.context or {}
+        pid     = ctx.get("pid") or ctx.get("PID")
+        process = (
+            ctx.get("process")
+            or ctx.get("service_name")
+            or ctx.get("proc")
+            or ""
+        ).strip()
+
+        if not pid and not process:
+            unattributed.append(ioc)
+            continue
+
+        # Normalise: "svchost.exe" + PID 1234 → key "svchost.exe::1234"
+        key = f"{process}::{pid}" if pid else f"{process}::?"
+        if key not in groups:
+            groups[key] = ProcessGroup(
+                pid=pid,
+                process_name=process or f"PID {pid}",
+            )
+        groups[key].iocs.append(ioc)
+
+    sorted_groups = sorted(groups.values(), key=lambda g: g.threat_score, reverse=True)
+    return sorted_groups, unattributed

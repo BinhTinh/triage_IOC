@@ -322,49 +322,64 @@ class ReportGenerator:
     def save_iocs_json(self, validated_iocs: List[ValidatedIOC], raw_iocs: List[dict] = None) -> str:
         if not self.case_dir:
             raise ValueError("Case directory not created.")
-        
+
         filepath = self.case_dir / "iocs.json"
-        
+
+        # Build flat summary
         ioc_data = {
             "generated_at": datetime.now().isoformat(),
             "total_iocs": len(validated_iocs),
-            "summary": {
-                "malicious": 0,
-                "suspicious": 0,
-                "benign": 0
-            },
+            "summary": {"malicious": 0, "suspicious": 0, "benign": 0},
             "by_type": {},
-            "iocs": {
-                "malicious": [],
-                "suspicious": [],
-                "benign": []
-            },
-            "raw_extracted": raw_iocs or []
+            "iocs": {"malicious": [], "suspicious": [], "benign": []},
+            "by_process": [],        # ← NEW: per-process kill-chain view
+            "unattributed_iocs": [], # ← NEW: hashes/paths with no process
+            "raw_extracted": raw_iocs or [],
         }
-        
+
         for v_ioc in validated_iocs:
             ioc_entry = {
-                "type": v_ioc.ioc.ioc_type,
-                "value": v_ioc.ioc.value,
-                "confidence": v_ioc.final_confidence,
-                "source_plugin": v_ioc.ioc.source_plugin,
-                "context": v_ioc.ioc.context,
+                "type":              v_ioc.ioc.ioc_type,
+                "value":             v_ioc.ioc.value,
+                "confidence":        v_ioc.final_confidence,
+                "source_plugin":     v_ioc.ioc.source_plugin,
+                "context":           v_ioc.ioc.context,
                 "validation_reason": v_ioc.reason,
-                "extracted_at": v_ioc.ioc.extracted_at.isoformat()
+                "extracted_at":      v_ioc.ioc.extracted_at.isoformat(),
             }
-            
             ioc_data["iocs"][v_ioc.verdict].append(ioc_entry)
             ioc_data["summary"][v_ioc.verdict] += 1
-            
+
             ioc_type = v_ioc.ioc.ioc_type
             if ioc_type not in ioc_data["by_type"]:
-                ioc_data["by_type"][ioc_type] = {"count": 0, "malicious": 0, "suspicious": 0, "benign": 0}
+                ioc_data["by_type"][ioc_type] = {
+                    "count": 0, "malicious": 0, "suspicious": 0, "benign": 0
+                }
             ioc_data["by_type"][ioc_type]["count"] += 1
             ioc_data["by_type"][ioc_type][v_ioc.verdict] += 1
-        
+
+        # Per-process grouping (operates on raw IOC objects)
+        try:
+            from src.core.ioc_extractor import group_iocs_by_process
+            raw_ioc_objects = [v.ioc for v in validated_iocs]
+            process_groups, unattributed = group_iocs_by_process(raw_ioc_objects)
+            ioc_data["by_process"] = [g.to_dict() for g in process_groups]
+            ioc_data["unattributed_iocs"] = [
+                {
+                    "type":       str(i.ioc_type),
+                    "value":      i.value,
+                    "confidence": round(i.confidence, 3),
+                    "technique":  i.context.get("technique", ""),
+                    "source":     i.source_plugin or "",
+                }
+                for i in sorted(unattributed, key=lambda x: -x.confidence)
+            ]
+        except Exception:
+            pass  # grouping is best-effort; never break the report
+
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(ioc_data, f, indent=2, ensure_ascii=False, default=str)
-        
+
         return str(filepath)
     
     
