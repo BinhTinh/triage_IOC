@@ -131,51 +131,146 @@ def _escape_md(value: str) -> str:
 
 
 def _build_forensic_markdown(validation_report: dict, source_report_path: str) -> str:
-    malicious = validation_report.get("malicious", [])
+    malicious  = validation_report.get("malicious",  [])
     suspicious = validation_report.get("suspicious", [])
-    benign = validation_report.get("benign", [])
-    summary = validation_report.get("summary", {})
-    system_profile = validation_report.get("system_profile", {})
+    benign     = validation_report.get("benign",     [])
+    summary    = validation_report.get("summary",    {})
+    system_profile    = validation_report.get("system_profile",    {})
     malware_assessment = validation_report.get("malware_assessment", {})
 
-    injections = [m for m in malicious if str(m.get("type", "")).lower() == "injection"]
-    hash_iocs = [
-        m for m in malicious if str(m.get("type", "")).lower() in {"md5", "sha1", "sha256"}
+    # ── Categorise entries ────────────────────────────────────────────────────
+    HASH_TYPES = {"md5", "sha1", "sha256"}
+
+    injections  = [m for m in malicious  if str(m.get("type", "")).lower() == "injection"]
+    hash_iocs   = [m for m in malicious  if str(m.get("type", "")).lower() in HASH_TYPES]
+
+    # Persistence = suspicious services/processes; evasion = suspicious filepaths; hashes = suspicious hashes
+    susp_hashes = [s for s in suspicious if str(s.get("type", "")).lower() in HASH_TYPES]
+    persist_entries = [
+        s for s in suspicious
+        if str(s.get("type", "")).lower() not in HASH_TYPES
     ]
 
-    techniques = sorted({
+    # ── MITRE technique → name lookup ─────────────────────────────────────────
+    TECHNIQUE_NAMES: dict[str, str] = {
+        "T1055":     "Process Injection",
+        "T1055.012": "Process Hollowing",
+        "T1059":     "Command and Scripting Interpreter",
+        "T1059.001": "PowerShell",
+        "T1071":     "Application Layer Protocol",
+        "T1071.001": "Web Protocols",
+        "T1036":     "Masquerading",
+        "T1204":     "User Execution / Malicious File",
+        "T1543.003": "Windows Service",
+        "T1547":     "Boot or Logon Autostart Execution",
+        "T1547.001": "Registry Run Keys",
+        "T1564.001": "Hidden Files and Directories",
+        "T1112":     "Modify Registry",
+    }
+
+    def _technique_label(tid: str) -> str:
+        name = TECHNIQUE_NAMES.get(tid, "")
+        return f"{tid} ({name})" if name else tid
+
+    # ── Build technique → evidence mapping ───────────────────────────────────
+    # Maps technique_id → list of brief evidence strings
+    technique_evidence: dict[str, list[str]] = {}
+
+    def _add_evidence(tid: str, evidence: str) -> None:
+        if not tid:
+            return
+        technique_evidence.setdefault(tid, [])
+        if evidence not in technique_evidence[tid]:
+            technique_evidence[tid].append(evidence)
+
+    for inj in injections:
+        ctx  = inj.get("context") or {}
+        proc = ctx.get("process", "unknown")
+        pid  = ctx.get("pid", "?")
+        prot = ctx.get("protection", "?")
+        _add_evidence("T1055", f"PAGE_EXECUTE_READWRITE anomaly in {proc} (PID {pid})")
+        if prot not in ("PAGE_EXECUTE_READWRITE", "?"):
+            _add_evidence("T1055", f"Protection={prot} in {proc} (PID {pid})")
+
+    for entry in persist_entries:
+        ctx = entry.get("context") or {}
+        tid = ctx.get("technique", "")
+        val = entry.get("value", "")
+        typ = str(entry.get("type", "")).lower()
+        if typ == "process":
+            bin_path = ctx.get("binary_path", "")
+            desc = f"Service '{val}'"
+            if bin_path:
+                desc += f" → {bin_path[:60]}"
+            _add_evidence(tid, desc)
+        elif typ == "filepath":
+            _add_evidence(tid, f"Obfuscated path: {val[:60]}")
+        else:
+            _add_evidence(tid, f"{typ}: {val[:60]}")
+
+    for h in hash_iocs + susp_hashes:
+        ctx = h.get("context") or {}
+        tid = ctx.get("technique", "T1204")
+        src = h.get("source_plugin", "unknown")
+        _add_evidence(tid, f"{str(h.get('type','hash')).upper()} in {src}")
+
+    all_techniques = sorted({
         str((e.get("context") or {}).get("technique"))
         for e in (malicious + suspicious)
         if (e.get("context") or {}).get("technique")
     })
 
+    # ── Per-process injection summary ─────────────────────────────────────────
     process_counts: dict[str, int] = {}
+    process_pid: dict[str, str] = {}
     for inj in injections:
-        proc = str((inj.get("context") or {}).get("process", "unknown"))
+        ctx  = inj.get("context") or {}
+        proc = str(ctx.get("process", "unknown"))
+        pid  = str(ctx.get("pid", "?"))
         process_counts[proc] = process_counts.get(proc, 0) + 1
+        process_pid[proc] = pid
     top_processes = sorted(process_counts.items(), key=lambda kv: kv[1], reverse=True)
 
+    # ── Artifact-type label helper ─────────────────────────────────────────────
+    def _artifact_type(entry: dict) -> str:
+        typ = str(entry.get("type", "")).lower()
+        ctx = entry.get("context") or {}
+        if typ == "process":
+            svc = ctx.get("service_name", "")
+            return "Service" if svc else "Process"
+        if typ == "filepath":
+            return "Filepath"
+        if typ in HASH_TYPES:
+            return typ.upper()
+        return typ.title()
+
+    # ─────────────────────────────────────────────────────────────────────────
     lines: list[str] = []
+
+    # ── Header ────────────────────────────────────────────────────────────────
     lines.append("# Forensic Incident Report")
     lines.append("")
-    lines.append(f"- Source validation file: {source_report_path}")
-    lines.append(f"- Generated at: {datetime.now().isoformat(timespec='seconds')}")
+    lines.append(f"- **Source validation file:** {source_report_path}")
+    lines.append(f"- **Generated at:** {datetime.now().isoformat(timespec='seconds')}")
     lines.append("")
+
+    # ── 1. Executive Summary ──────────────────────────────────────────────────
     lines.append("## 1. Executive Summary")
     lines.append("")
-    lines.append(f"- Malicious IOCs: {summary.get('malicious', len(malicious))}")
-    lines.append(f"- Suspicious IOCs: {summary.get('suspicious', len(suspicious))}")
-    lines.append(f"- Benign IOCs: {summary.get('benign', len(benign))}")
-    lines.append(f"- Injection actions: {len(injections)}")
-    lines.append(f"- Malicious hashes confirmed: {len(hash_iocs)}")
+    lines.append(f"- **Malicious IOCs:** {summary.get('malicious', len(malicious))}")
+    lines.append(f"- **Suspicious IOCs:** {summary.get('suspicious', len(suspicious))}")
+    lines.append(f"- **Benign IOCs:** {summary.get('benign', len(benign))}")
+    lines.append(f"- **Process injection regions:** {len(injections)}"
+                 + (f" across {len(process_counts)} process(es)" if process_counts else ""))
+    lines.append(f"- **Malicious hashes confirmed:** {len(hash_iocs)}")
+    lines.append(f"- **Suspicious hashes:** {len(susp_hashes)}")
+    lines.append(f"- **Persistence/evasion artifacts:** {len(persist_entries)}")
     if malware_assessment:
-        lines.append(
-            f"- Likely malware type: {malware_assessment.get('likely_type', 'undetermined')}"
-        )
-        lines.append(
-            f"- Compromise level: {malware_assessment.get('compromise_level', 'unknown')}"
-        )
+        lines.append(f"- **Likely malware type:** {malware_assessment.get('likely_type', 'undetermined')}")
+        lines.append(f"- **Compromise level:** {malware_assessment.get('compromise_level', 'unknown')}")
     lines.append("")
+
+    # ── 2. Host/System Profile ────────────────────────────────────────────────
     lines.append("## 2. Host/System Profile")
     lines.append("")
     lines.append(f"- OS type: {system_profile.get('os_type', 'unknown')}")
@@ -183,70 +278,189 @@ def _build_forensic_markdown(validation_report: dict, source_report_path: str) -
     lines.append(f"- OS build: {system_profile.get('build', 'unknown')}")
     lines.append(f"- Processor architecture: {system_profile.get('processor_arch', 'unknown')}")
     lines.append("")
+
+    # ── 3. Malware Actions Observed ───────────────────────────────────────────
     lines.append("## 3. Malware Actions Observed")
     lines.append("")
+
+    # ── 3.1 Process Injection ─────────────────────────────────────────────────
     lines.append("### 3.1 Process Injection Actions (T1055)")
     lines.append("")
-    lines.append("| # | Process | PID | Start VPN | Protection | Source Plugin |")
-    lines.append("|---|---------|-----|-----------|------------|---------------|")
-    for idx, inj in enumerate(injections, 1):
-        ctx = inj.get("context") or {}
-        lines.append(
-            "| "
-            + f"{idx} | {_escape_md(ctx.get('process', 'unknown'))}"
-            + f" | {_escape_md(ctx.get('pid', 'unknown'))}"
-            + f" | {_escape_md(ctx.get('start_vpn', 'unknown'))}"
-            + f" | {_escape_md(ctx.get('protection', 'unknown'))}"
-            + f" | {_escape_md(inj.get('source_plugin', 'unknown'))} |"
-        )
+    if top_processes:
+        summary_parts = [f"**{proc}** was targeted {count} time(s) (PID {process_pid[proc]})"
+                         for proc, count in top_processes]
+        lines.append("**Summary:** " + "; ".join(summary_parts) + ".")
+        lines.append("")
+    if injections:
+        lines.append("| # | Target Process | PID | PPID | Start VPN | Region Size | Memory Protection | Header / Hex (first 16 B) | MZ? | Source Plugin |")
+        lines.append("|---|---------------|-----|------|-----------|-------------|-------------------|--------------------------|-----|---------------|")
+        for idx, inj in enumerate(injections, 1):
+            ctx  = inj.get("context") or {}
+            proc = _escape_md(ctx.get("process", "unknown"))
+            pid  = _escape_md(ctx.get("pid", "?"))
+            ppid = _escape_md(ctx.get("ppid", "—") if ctx.get("ppid") is not None else "—")
+            vpn  = _escape_md(ctx.get("start_vpn", "?"))
+            prot = _escape_md(ctx.get("protection", "?"))
+            src  = _escape_md(inj.get("source_plugin", "?"))
+            has_mz = ctx.get("has_pe_header", False)
+            mz_flag = "**MZ ✓**" if has_mz else "—"
+
+            # Region size — bytes already computed in extractor; format nicely
+            raw_size = ctx.get("region_size", 0)
+            try:
+                sz = int(raw_size)
+                if sz >= 1024 * 1024:
+                    size_str = f"{sz / (1024*1024):.2f} MB"
+                elif sz >= 1024:
+                    size_str = f"{sz / 1024:.1f} KB"
+                elif sz > 0:
+                    size_str = f"{sz} B"
+                else:
+                    size_str = "—"
+            except (ValueError, TypeError):
+                size_str = "—"
+
+            # Header hex — already trimmed to 16 bytes in extractor
+            header_hex = ctx.get("header_hex", "")
+            if header_hex:
+                # Bold it if MZ header present
+                hex_cell = f"**{_escape_md(header_hex)}**" if has_mz else f"`{_escape_md(header_hex)}`"
+            else:
+                hex_cell = "—"
+
+            lines.append(f"| {idx} | {proc} | {pid} | {ppid} | {vpn} | {size_str} | {prot} | {hex_cell} | {mz_flag} | {src} |")
+    else:
+        lines.append("_No process injection evidence found._")
     lines.append("")
-    lines.append("Injection distribution by process:")
-    for proc, count in top_processes:
-        lines.append(f"- {proc}: {count}")
+
+    # ── 3.2 Persistence & Suspicious Actions ─────────────────────────────────
+    lines.append("### 3.2 Persistence & Suspicious Actions")
     lines.append("")
-    lines.append("### 3.2 Malicious Hash Artifacts")
+    if persist_entries:
+        lines.append("| # | Artifact Type | Value | Binary / Path | Associated Technique | Detecting Plugin |")
+        lines.append("|---|--------------|-------|--------------|----------------------|-----------------|")
+        for idx, entry in enumerate(persist_entries, 1):
+            ctx       = entry.get("context") or {}
+            art_type  = _escape_md(_artifact_type(entry))
+            value     = _escape_md(entry.get("value", ""))
+            bin_path  = _escape_md(
+                ctx.get("binary_path", "")
+                or ctx.get("data", "")
+                or "—"
+            )
+            tid       = ctx.get("technique", "")
+            technique = _escape_md(_technique_label(tid) if tid else "—")
+            plugin    = _escape_md(entry.get("source_plugin", "unknown"))
+            lines.append(f"| {idx} | {art_type} | {value} | {bin_path} | {technique} | {plugin} |")
+    else:
+        lines.append("_No persistence or evasion artifacts found._")
     lines.append("")
-    lines.append("| # | Type | Value | Evidence |")
-    lines.append("|---|------|-------|----------|")
-    for idx, h in enumerate(hash_iocs, 1):
-        lines.append(
-            "| "
-            + f"{idx} | {_escape_md(h.get('type', 'unknown'))}"
-            + f" | {_escape_md(h.get('value', ''))}"
-            + f" | {_escape_md(h.get('reason', ''))} |"
-        )
+
+    # ── 3.3 Confirmed Malicious Hashes ───────────────────────────────────────
+    lines.append("### 3.3 Confirmed Malicious Hashes")
     lines.append("")
-    lines.append("### 3.3 Persistence and Other Suspicious Actions")
+    HASH_DISPLAY_LIMIT = 5
+    all_hashes = hash_iocs  # only malicious-verdict hashes here
+    if all_hashes:
+        display_hashes = all_hashes[:HASH_DISPLAY_LIMIT]
+        lines.append("| # | Hash Type | Value | Source Plugin |")
+        lines.append("|---|----------|-------|--------------|")
+        for idx, h in enumerate(display_hashes, 1):
+            ctx = h.get("context") or {}
+            htype  = _escape_md(str(h.get("type", "hash")).upper())
+            value  = _escape_md(h.get("value", ""))
+            plugin = _escape_md(h.get("source_plugin", "unknown"))
+            lines.append(f"| {idx} | {htype} | `{value}` | {plugin} |")
+        if len(all_hashes) > HASH_DISPLAY_LIMIT:
+            remaining = len(all_hashes) - HASH_DISPLAY_LIMIT
+            lines.append("")
+            lines.append(
+                f"*{len(all_hashes)} total hashes confirmed malicious. "
+                f"Showing first {HASH_DISPLAY_LIMIT}; "
+                f"{remaining} additional hash(es) omitted. See raw JSON for full list.*"
+            )
+    else:
+        lines.append("_No malicious hashes confirmed._")
     lines.append("")
-    lines.append("| # | IOC Type | Value | Technique | Source Plugin | Verdict |")
-    lines.append("|---|----------|-------|-----------|---------------|---------|")
-    for idx, entry in enumerate(suspicious, 1):
-        ctx = entry.get("context") or {}
-        lines.append(
-            "| "
-            + f"{idx} | {_escape_md(entry.get('type', 'unknown'))}"
-            + f" | {_escape_md(entry.get('value', ''))}"
-            + f" | {_escape_md(ctx.get('technique', ''))}"
-            + f" | {_escape_md(entry.get('source_plugin', 'unknown'))}"
-            + f" | {_escape_md(entry.get('verdict', 'suspicious'))} |"
-        )
+
+    # ── 3.4 Suspicious Hashes (if any) ───────────────────────────────────────
+    if susp_hashes:
+        lines.append("### 3.4 Suspicious Hashes (Unconfirmed)")
+        lines.append("")
+        lines.append("| # | Hash Type | Value | Source Plugin |")
+        lines.append("|---|----------|-------|--------------|")
+        display = susp_hashes[:HASH_DISPLAY_LIMIT]
+        for idx, h in enumerate(display, 1):
+            htype  = _escape_md(str(h.get("type", "hash")).upper())
+            value  = _escape_md(h.get("value", ""))
+            plugin = _escape_md(h.get("source_plugin", "unknown"))
+            lines.append(f"| {idx} | {htype} | `{value}` | {plugin} |")
+        if len(susp_hashes) > HASH_DISPLAY_LIMIT:
+            lines.append("")
+            lines.append(
+                f"*{len(susp_hashes)} total suspicious hashes. "
+                f"Showing first {HASH_DISPLAY_LIMIT}. See raw JSON for full list.*"
+            )
+        lines.append("")
+
+    # ── 4. MITRE ATT&CK Mapping ───────────────────────────────────────────────
+    lines.append("## 4. MITRE ATT&CK Techniques Observed")
     lines.append("")
-    lines.append("## 4. ATT&CK Techniques Observed")
-    lines.append("")
-    if techniques:
-        for t in techniques:
-            lines.append(f"- {t}")
+    if all_techniques:
+        for tid in all_techniques:
+            label    = _technique_label(tid)
+            evidence = technique_evidence.get(tid, [])
+            # Deduplicate and trim evidence to 3 examples max
+            evidence_str = "; ".join(evidence[:3])
+            if evidence:
+                lines.append(f"- **{label}:** Evidenced by {evidence_str}.")
+            else:
+                lines.append(f"- **{label}**")
     else:
         lines.append("- None explicitly tagged in IOC context")
     lines.append("")
+
+    # ── 5. Conclusion ─────────────────────────────────────────────────────────
     lines.append("## 5. Conclusion")
     lines.append("")
-    lines.append(
-        "The evidence indicates host compromise with repeated in-memory injection activity and"
-        " confirmed malicious artifact(s). Review suspicious persistence actions to identify"
-        " active footholds and startup mechanisms."
-    )
+    # Dynamic conclusion based on actual findings
+    parts = []
+    if injections:
+        primary_proc = top_processes[0][0] if top_processes else "unknown"
+        primary_cnt  = top_processes[0][1] if top_processes else 0
+        parts.append(
+            f"**{primary_cnt} PAGE_EXECUTE_READWRITE memory injection region(s)** detected "
+            f"in `{primary_proc}` and {len(process_counts) - 1} other process(es) — "
+            f"consistent with reflective DLL injection or shellcode staging (T1055)."
+        )
+    if hash_iocs:
+        parts.append(
+            f"**{len(hash_iocs)} malicious hash(es)** confirmed by local scoring "
+            f"from `{hash_iocs[0].get('source_plugin', 'filescan')}` and related modules."
+        )
+    if persist_entries:
+        svc_entries = [e for e in persist_entries if _artifact_type(e) == "Service"]
+        if svc_entries:
+            svc_names = ", ".join(f"`{e.get('value','?')}`" for e in svc_entries[:3])
+            parts.append(
+                f"**Persistence via Windows service(s)** ({svc_names}) detected — "
+                f"review binary paths for tampering (T1543.003)."
+            )
+    if not parts:
+        parts.append("No significant compromise indicators were found in this analysis.")
+
+    lines.append(" ".join(parts))
     lines.append("")
+    lines.append("**Recommended actions:**")
+    if injections:
+        pids = sorted({str((i.get("context") or {}).get("pid", "?")) for i in injections})
+        lines.append(f"1. Dump memory of PID(s) {', '.join(pids)} for deeper analysis.")
+    if hash_iocs:
+        lines.append(f"2. Submit top hashes to VirusTotal for external reputation check.")
+    if persist_entries:
+        lines.append(f"3. Review and disable suspicious services listed in Section 3.2.")
+    lines.append("")
+
     return "\n".join(lines)
 
 

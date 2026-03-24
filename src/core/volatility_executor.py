@@ -167,6 +167,78 @@ class VolatilityExecutor:
         except Exception as e:
             return PluginResult(plugin=plugin, success=False, data=None, error=str(e))
 
+    async def run_plugin_with_output_dir(
+        self,
+        dump_path: str,
+        plugin: str,
+        output_dir: str,
+        args: Optional[Dict[str, Any]] = None,
+    ) -> PluginResult:
+        """Run a plugin that writes file artifacts (e.g. --dump) to output_dir.
+
+        Returns a PluginResult whose data list contains the JSON rows
+        **plus** an extra ``_dumped_files`` key listing absolute paths
+        of every file the plugin wrote into *output_dir*.
+        """
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Snapshot existing files so we can diff after the run
+        before = set(Path(output_dir).iterdir())
+
+        cmd = self.vol_command.copy()
+        cmd.extend(["-f", dump_path, "-r", "json", "-o", output_dir])
+
+        if self.cache_dir and Path(self.cache_dir).exists():
+            cmd.extend(["--cache-path", self.cache_dir])
+        if self.symbol_dirs and Path(self.symbol_dirs).exists():
+            cmd.extend(["-s", self.symbol_dirs])
+
+        cmd.append(plugin)
+        if args:
+            for key, value in args.items():
+                if value is True:
+                    cmd.append(f"--{key}")
+                elif value is not False and value is not None:
+                    cmd.extend([f"--{key}", str(value)])
+
+        print(f"🔧 Running (dump→{output_dir}): {' '.join(cmd)}", file=sys.stderr)
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=output_dir,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=self.timeout,
+            )
+
+            if process.returncode != 0:
+                error_msg = stderr.decode().strip() if stderr else "Unknown error"
+                return PluginResult(plugin=plugin, success=False, data=None, error=error_msg[:500])
+
+            output = stdout.decode().strip()
+            try:
+                data = json.loads(output) if output else []
+                result_data = data if isinstance(data, list) else [data]
+            except json.JSONDecodeError:
+                result_data = []
+
+            # Identify newly-written files
+            after = set(Path(output_dir).iterdir())
+            new_files = sorted(str(f) for f in (after - before) if f.is_file())
+
+            # Attach the file list to the result
+            result_data.append({"_dumped_files": new_files})
+
+            return PluginResult(plugin=plugin, success=True, data=result_data, error=None)
+
+        except asyncio.TimeoutError:
+            return PluginResult(plugin=plugin, success=False, data=None, error=f"Dump timed out after {self.timeout}s")
+        except Exception as e:
+            return PluginResult(plugin=plugin, success=False, data=None, error=str(e))
+
     async def run_plugins_parallel(
         self,
         dump_path: str,
