@@ -19,7 +19,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - REDIS_URL=redis://redis:6379
-      - ENABLE_THREAT_INTEL=${ENABLE_THREAT_INTEL:-false}
+      - ENABLE_THREAT_INTEL=${ENABLE_THREAT_INTEL:-true}
       - VT_API_KEY=${VT_API_KEY}
       - ABUSEIPDB_KEY=${ABUSEIPDB_KEY}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -27,10 +27,8 @@ services:
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8000
       - ALLOWED_DUMP_DIRS=/app/data/dumps
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
-      - USE_DEEPSEEK=${USE_DEEPSEEK:-true}
       - USE_LOCAL_PATTERNS=${USE_LOCAL_PATTERNS:-true}
+      - LAB_NETWORK=${LAB_NETWORK:-}
       - SYMBOLS_DIR=/app/data/symbols/volatility3
       - VOLATILITY_CACHE_DIR=/app/data/cache/volatility3
       - REPORTS_DIR=/app/data/reports
@@ -74,12 +72,9 @@ services:
       - ./volatility3:/app/volatility3:ro
     environment:
       - REDIS_URL=redis://redis:6379
-      - ENABLE_THREAT_INTEL=${ENABLE_THREAT_INTEL:-false}
+      - ENABLE_THREAT_INTEL=${ENABLE_THREAT_INTEL:-true}
       - VT_API_KEY=${VT_API_KEY}
       - ABUSEIPDB_KEY=${ABUSEIPDB_KEY}
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
-      - USE_DEEPSEEK=${USE_DEEPSEEK:-true}
       - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
       - ALLOWED_DUMP_DIRS=/app/data/dumps
       - SYMBOLS_DIR=/app/data/symbols/volatility3

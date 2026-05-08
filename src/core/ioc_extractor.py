@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from src.models.ioc import IOC, IOCType
 from src.core.registry_analyzer import RegistryAnalyzer
+from src.config.settings import settings
 
 IOC_PATTERNS: Dict[str, Dict[str, Any]] = {
     IOCType.IPV4: {
@@ -37,17 +38,17 @@ IOC_PATTERNS: Dict[str, Dict[str, Any]] = {
     IOCType.MD5: {
         "pattern": r"\b[a-fA-F0-9]{32}\b",
         "exclude": [],
-        "source_gate": {"amcache", "filescan", "dumpfiles", "ldrmodules", "shimcachemem"},
+        "source_gate": {"amcache", "dumpfiles", "shimcachemem"},
     },
     IOCType.SHA1: {
         "pattern": r"\b[a-fA-F0-9]{40}\b",
         "exclude": [],
-        "source_gate": {"amcache", "filescan", "dumpfiles", "ldrmodules", "shimcachemem"},
+        "source_gate": {"amcache", "dumpfiles", "shimcachemem"},
     },
     IOCType.SHA256: {
         "pattern": r"\b[a-fA-F0-9]{64}\b",
         "exclude": [],
-        "source_gate": {"amcache", "filescan", "dumpfiles", "ldrmodules", "shimcachemem"},
+        "source_gate": {"amcache", "dumpfiles", "shimcachemem"},
     },
 
     IOCType.FILEPATH: {
@@ -226,6 +227,38 @@ def _is_private_ip(ip: str) -> bool:
     return False
 
 
+def _build_lab_networks():
+    """Parse LAB_NETWORK setting into a list of ipaddress network objects."""
+    import ipaddress as _ipmod
+    nets = []
+    for cidr in settings.lab_networks:
+        try:
+            nets.append(_ipmod.ip_network(cidr, strict=False))
+        except ValueError:
+            pass
+    return nets
+
+
+# Module-level cache — rebuilt only when settings change (effectively once at startup).
+_LAB_NETWORKS = _build_lab_networks()
+
+
+def _is_lab_ip(ip: str) -> bool:
+    """Return True if ip falls inside a configured LAB_NETWORK CIDR.
+
+    IPs matching lab networks bypass the private-IP filter so that
+    sandbox C2 traffic (e.g. INetSim on 192.168.56.150) is captured.
+    """
+    if not _LAB_NETWORKS:
+        return False
+    import ipaddress as _ipmod
+    try:
+        addr = _ipmod.ip_address(ip)
+        return any(addr in net for net in _LAB_NETWORKS)
+    except ValueError:
+        return False
+
+
 class IOCExtractor:
     def __init__(self) -> None:
         self.seen: Set[str] = set()
@@ -292,6 +325,10 @@ class IOCExtractor:
                         continue
                     if match.lower() in _KNOWN_PROCESS_NAMES:
                         continue
+                # Filter false-positive hashes (e.g. memory addresses serialised as hex)
+                if ioc_type in (IOCType.MD5, IOCType.SHA1, IOCType.SHA256):
+                    if self._is_likely_false_hash(match):
+                        continue
                 if match in self.seen:
                     continue
                 self.seen.add(match)
@@ -313,6 +350,21 @@ class IOCExtractor:
 
     def reset(self) -> None:
         self.seen.clear()
+
+    @staticmethod
+    def _is_likely_false_hash(value: str) -> bool:
+        """Return True if a hex string is likely a memory address or GUID, not a real hash."""
+        v = value.lower()
+        # All same character (e.g. '00000000...') or repeating pattern
+        if len(set(v)) <= 2:
+            return True
+        # Starts with common memory-address prefixes (kernel/user pointers serialised)
+        if v.startswith(('00000000', '7ffe', '7fff', 'fffff', '00007ff')):
+            return True
+        # Mostly zeros (sparse addresses)
+        if v.count('0') > len(v) * 0.6:
+            return True
+        return False
 
 
 class ContextAwareExtractor:
@@ -389,9 +441,14 @@ class ContextAwareExtractor:
 
         return iocs
 
-    def analyze_malfind(self, malfind_data: List[Dict[str, Any]]) -> List[IOC]:
+    def analyze_malfind(
+        self,
+        malfind_data: List[Dict[str, Any]],
+        ppid_map: Optional[Dict[int, int]] = None,
+    ) -> List[IOC]:
         iocs: List[IOC] = []
         _rwx = re.compile(r"PAGE_EXECUTE_READ(WRITE)?|rwx", re.IGNORECASE)
+        ppid_map = ppid_map or {}
 
         for entry in malfind_data:
             protection = str(_get(entry, "Protection", "protection", "Protect"))
@@ -404,6 +461,24 @@ class ContextAwareExtractor:
             process   = str(_get(entry, "Process", "name", "Name"))
             start_vpn = str(_get(entry, "Start VPN", "StartVPN", "start", "VadStart"))
 
+            # ── New: end_vpn, region size, header hex, ppid ─────────────────
+            end_vpn_raw = _get(entry, "End VPN", "EndVPN", "end", "VadEnd")
+            try:
+                start_int   = int(start_vpn)
+                end_int     = int(end_vpn_raw) if end_vpn_raw else 0
+                region_size = max(0, end_int - start_int + 1) if end_int else 0
+            except (ValueError, TypeError):
+                start_int   = 0
+                end_int     = 0
+                region_size = 0
+
+            # Extract first 16 hex bytes (space-separated pairs from Hexdump)
+            hex_tokens  = hexdump.strip().split()
+            header_hex  = " ".join(hex_tokens[:16]) if hex_tokens else ""
+
+            ppid = ppid_map.get(int(pid), None) if pid is not None else None
+            # ────────────────────────────────────────────────────────────────
+
             confidence = 0.90 if has_mz else 0.70
 
             iocs.append(IOC(
@@ -412,13 +487,17 @@ class ContextAwareExtractor:
                 confidence=confidence,
                 source_plugin="windows.malware.malfind.Malfind",
                 context={
-                    "pid":           pid,
-                    "process":       process,
-                    "start_vpn":     start_vpn,
-                    "protection":    protection,
-                    "has_pe_header": has_mz,
-                    "technique":     "T1055",
-                    "category":      "host",
+                    "pid":              pid,
+                    "ppid":             ppid,
+                    "process":          process,
+                    "start_vpn":        start_vpn,
+                    "end_vpn":          str(end_vpn_raw) if end_vpn_raw else "",
+                    "region_size":      region_size,
+                    "protection":       protection,
+                    "has_pe_header":    has_mz,
+                    "header_hex":       header_hex,
+                    "technique":        "T1055",
+                    "category":         "host",
                 },
                 extracted_at=datetime.now(),
             ))
@@ -511,7 +590,7 @@ class ContextAwareExtractor:
                     ))
 
         return iocs
-    
+
     def analyze_netscan(
         self,
         netscan_data: List[Dict[str, Any]],
@@ -545,8 +624,9 @@ class ContextAwareExtractor:
             is_rare_port = foreign_port in RARE_PORTS
             is_uncommon_port = foreign_port not in COMMON_LEGITIMATE_PORTS
             is_private = _is_private_ip(foreign_ip)
+            is_lab     = _is_lab_ip(foreign_ip)       # lab subnet → treat as external C2
 
-            if is_private and not pid_is_suspicious and not is_rare_port:
+            if is_private and not is_lab and not pid_is_suspicious and not is_rare_port:
                 continue
 
             if owner in self._network_whitelist and not pid_is_suspicious:
@@ -590,6 +670,7 @@ class ContextAwareExtractor:
                     "proto": proto,
                     "reasons": reasons,
                     "is_private": is_private,
+                    "is_lab_network": _is_lab_ip(foreign_ip),
                     "technique": "T1071",
                     "category": "network",
                 },
@@ -857,8 +938,219 @@ class ContextAwareExtractor:
 
         return iocs
 
+    # ── Amcache: real SHA1 hashes of executed programs ──────────────────────
+    def analyze_amcache(self, amcache_data: List[Dict[str, Any]]) -> List[IOC]:
+        """Extract SHA1 hashes and file paths from Amcache entries.
+
+        Amcache records every executable that Windows has ever run,
+        together with its SHA1 hash — this is the primary source of
+        real file hashes in a memory dump (Vol3 doesn't hash files by default).
+        """
+        iocs: List[IOC] = []
+        _suspicious_paths = re.compile(
+            r"(?i)(\\Temp\\|\\AppData\\|\\Users\\Public\\|\\ProgramData\\|"
+            r"\\Downloads\\|\\Desktop\\|\\Recycle|\\Windows\\Temp\\)",
+        )
+
+        for entry in amcache_data:
+            sha1 = str(
+                _get(entry, "SHA1", "sha1", "Sha1", "FileId", "file_id")
+            ).strip().lower()
+            file_path = str(
+                _get(entry, "File Name", "FileName", "FilePath", "Path",
+                     "file_name", "Full Path")
+            )
+            # Amcache sometimes prefixes SHA1 with '0000' padding — strip it
+            if sha1.startswith("0000"):
+                sha1 = sha1[4:]
+            # Skip empty / all-zero / too-short values
+            if not sha1 or len(sha1) < 40 or set(sha1) == {"0"}:
+                continue
+
+            confidence = 0.85
+            is_suspicious = bool(_suspicious_paths.search(file_path))
+            if is_suspicious:
+                confidence = 0.92
+
+            iocs.append(IOC(
+                ioc_type=IOCType.SHA1,
+                value=sha1,
+                confidence=confidence,
+                source_plugin="windows.registry.amcache.Amcache",
+                context={
+                    "file_path":      file_path,
+                    "suspicious_path": is_suspicious,
+                    "technique":      "T1204",
+                    "category":       "host",
+                },
+                extracted_at=datetime.now(),
+            ))
+
+        return iocs
+
+    # ── LdrModules: hidden DLLs (missing from at least one load list) ──────
+    def analyze_ldrmodules(self, ldr_data: List[Dict[str, Any]]) -> List[IOC]:
+        """Flag modules hidden from at least one of the PE loader lists.
+
+        LdrModules compares InInit/InLoad/InMem — a mismatch indicates
+        DLL injection or unlinking (T1055.001).
+        """
+        iocs: List[IOC] = []
+
+        for entry in ldr_data:
+            in_init = entry.get("InInit", True)
+            in_load = entry.get("InLoad", True)
+            in_mem  = entry.get("InMem", True)
+
+            # Only interested in modules missing from at least one list
+            if in_init and in_load and in_mem:
+                continue
+
+            pid     = _get(entry, "Pid", "PID", "pid")
+            process = str(_get(entry, "Process", "name"))
+            path    = str(_get(entry, "MappedPath", "Base", "Path"))
+
+            # Skip rows with no useful path
+            if not path or path in ("", "None"):
+                continue
+
+            # Skip non-ASCII / unicode garbage from corrupt memory pages
+            try:
+                path.encode("ascii")
+            except UnicodeEncodeError:
+                continue
+
+            # Skip numeric-only values (stringified memory addresses, not paths)
+            if path.replace(" ", "").isdigit():
+                continue
+
+            # Skip entries with no PID (corrupt rows from _get default)
+            if not pid or str(pid) in ("", "None"):
+                continue
+
+            # Skip System PID 4 entries — kernel modules always appear "hidden"
+            try:
+                if int(pid) <= 4:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+            path_lower = path.lower()
+
+            # Skip non-executable resource files that are expected to be hidden
+            _SKIP_EXTS = (".mui", ".fon", ".ttf", ".otf", ".nls", ".dat",
+                          ".cat", ".mof", ".man", ".xsd", ".xml", ".json",
+                          ".evtx", ".log")
+            if path_lower.endswith(_SKIP_EXTS):
+                continue
+
+            # Count missing lists
+            missing_count = sum(1 for v in (in_init, in_load, in_mem) if not v)
+
+            # System / known vendor paths — always skip.
+            # Even with all 3 lists missing this is normal (paged-out, mapped differently).
+            _SYS_PREFIXES = (
+                "\\windows\\", "\\program files\\", "\\program files (x86)\\",
+                "\\programdata\\microsoft\\", "\\programdata\\packages\\",
+            )
+            if path_lower.startswith(_SYS_PREFIXES):
+                continue
+
+            # For other locations, require missing from 2+ lists
+            # unless the path is in a suspicious directory (Temp, AppData, etc.)
+            _SUSPICIOUS_DIRS = ("\\temp\\", "\\appdata\\", "\\public\\",
+                                "\\programdata\\", "\\downloads\\", "\\desktop\\")
+            is_suspicious_path = any(d in path_lower for d in _SUSPICIOUS_DIRS)
+            if not is_suspicious_path and missing_count < 2:
+                continue
+
+
+
+
+            reasons = []
+            if not in_init:
+                reasons.append("not_in_init_order")
+            if not in_load:
+                reasons.append("not_in_load_order")
+            if not in_mem:
+                reasons.append("not_in_memory_order")
+
+            iocs.append(IOC(
+                ioc_type=IOCType.FILEPATH,
+                value=path,
+                confidence=0.70,
+                source_plugin="windows.malware.ldrmodules.LdrModules",
+                context={
+                    "pid":       pid,
+                    "process":   process,
+                    "in_init":   in_init,
+                    "in_load":   in_load,
+                    "in_mem":    in_mem,
+                    "reasons":   reasons,
+                    "technique": "T1055.001",
+                    "category":  "host",
+                },
+                extracted_at=datetime.now(),
+            ))
+
+        return iocs
+
+    # ── Procdump hashes: real SHA256/MD5 from dumped process EXEs ───────
+    def analyze_procdump_hashes(
+        self, hash_data: List[Dict[str, Any]],
+    ) -> List[IOC]:
+        """Parse _procdump_hashes entries into SHA256 and MD5 IOCs.
+
+        Each entry has: pid, process, dumped_file, file_size,
+        sha256, md5, has_mz_header — produced by the
+        _dump_and_hash_suspicious_processes() post-step in execution.py.
+        """
+        iocs: List[IOC] = []
+
+        for entry in hash_data:
+            pid      = entry.get("pid")
+            process  = entry.get("process", "unknown")
+            sha256   = entry.get("sha256", "")
+            md5      = entry.get("md5", "")
+            size     = entry.get("file_size", 0)
+            has_mz   = entry.get("has_mz_header", False)
+            filename = entry.get("dumped_file", "")
+
+            base_ctx = {
+                "pid":           pid,
+                "process":       process,
+                "dumped_file":   filename,
+                "file_size":     size,
+                "has_mz_header": has_mz,
+                "technique":     "T1204",
+                "category":      "host",
+            }
+
+            if sha256 and len(sha256) == 64:
+                iocs.append(IOC(
+                    ioc_type=IOCType.SHA256,
+                    value=sha256,
+                    confidence=0.95 if has_mz else 0.80,
+                    source_plugin="procdump",
+                    context={**base_ctx, "hash_type": "sha256"},
+                    extracted_at=datetime.now(),
+                ))
+
+            if md5 and len(md5) == 32:
+                iocs.append(IOC(
+                    ioc_type=IOCType.MD5,
+                    value=md5,
+                    confidence=0.95 if has_mz else 0.80,
+                    source_plugin="procdump",
+                    context={**base_ctx, "hash_type": "md5"},
+                    extracted_at=datetime.now(),
+                ))
+
+        return iocs
+
 
 class ExtractionPipeline:
+
     def __init__(self, os_type: str) -> None:
         self.os_type = os_type
         self.regex_extractor    = IOCExtractor()
@@ -903,7 +1195,16 @@ class ExtractionPipeline:
 
         malfind_data = self._find(plugin_results, "malfind")
         if malfind_data:
-            all_iocs.extend(self.context_extractor.analyze_malfind(malfind_data))
+            # Build pid→ppid map from already-loaded pslist
+            ppid_map: Dict[int, int] = {}
+            for proc in (pslist_data or []):
+                try:
+                    ppid_map[int(proc.get("PID", 0))] = int(proc.get("PPID", 0))
+                except (ValueError, TypeError):
+                    pass
+            all_iocs.extend(
+                self.context_extractor.analyze_malfind(malfind_data, ppid_map=ppid_map)
+            )
 
         # Hollow processes get a dedicated analyzer (T1055.012) rather than
         # being lumped in with malfind — different output fields, different confidence.
@@ -943,6 +1244,24 @@ class ExtractionPipeline:
             svcscan_data = self._find(plugin_results, "svcscan")
             if svcscan_data:
                 all_iocs.extend(self.context_extractor.analyze_svcscan(svcscan_data))
+
+            # Amcache: extract real SHA1 hashes of executed programs (T1204)
+            amcache_data = self._find(plugin_results, "amcache")
+            if amcache_data:
+                all_iocs.extend(self.context_extractor.analyze_amcache(amcache_data))
+
+            # LdrModules: hidden DLLs missing from load lists (T1055.001)
+            ldr_data = self._find(plugin_results, "ldrmodules")
+            if ldr_data:
+                all_iocs.extend(self.context_extractor.analyze_ldrmodules(ldr_data))
+
+            # Procdump hashes: real SHA256/MD5 from dumped suspicious process EXEs
+            procdump_data = plugin_results.get("_procdump_hashes")
+            if procdump_data and isinstance(procdump_data, list):
+                all_iocs.extend(
+                    self.context_extractor.analyze_procdump_hashes(procdump_data)
+                )
+
 
         else:
             sockstat_data = self._find(plugin_results, "sockstat", "sockscan")

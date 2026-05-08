@@ -11,10 +11,13 @@ class Settings:
     )
     vt_api_key: Optional[str] = field(default_factory=lambda: os.getenv("VT_API_KEY"))
     abuseipdb_key: Optional[str] = field(default_factory=lambda: os.getenv("ABUSEIPDB_KEY"))
-    deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
-    deepseek_model: str = field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-chat"))
-    use_deepseek: bool = field(default_factory=lambda: os.getenv("USE_DEEPSEEK", "true").lower() == "true")
     use_local_patterns: bool = field(default_factory=lambda: os.getenv("USE_LOCAL_PATTERNS", "true").lower() == "true")
+
+    # Lab/sandbox network — treat these CIDRs as external (bypass private-IP filter).
+    # Example: LAB_NETWORK=192.168.56.0/24  (all InetSim / victim traffic flagged)
+    lab_networks: List[str] = field(default_factory=lambda: [
+        s.strip() for s in os.getenv("LAB_NETWORK", "").split(",") if s.strip()
+    ])
     
     redis_url: Optional[str] = field(default_factory=lambda: os.getenv("REDIS_URL"))
     database_url: Optional[str] = field(default_factory=lambda: os.getenv("DATABASE_URL"))

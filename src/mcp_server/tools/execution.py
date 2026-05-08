@@ -207,6 +207,18 @@ async def _run_preset(ctx: Context, dump_path: str, os_type: str, max_concurrent
             failed += 1
 
     await ctx.report_progress(total, total, "Complete")
+
+    # ── Post-preset: dump & hash suspicious processes ──────────────────
+    if os_type == "windows":
+        hash_data = await _dump_and_hash_suspicious_processes(
+            ctx, dump_path, host_data,
+        )
+        if hash_data:
+            host_data["_procdump_hashes"] = hash_data
+            await ctx.info(
+                f"Procdump hashing: {len(hash_data)} file(s) hashed from suspicious PIDs"
+            )
+
     return {
         "total": total,
         "successful": successful,
@@ -215,6 +227,108 @@ async def _run_preset(ctx: Context, dump_path: str, os_type: str, max_concurrent
         "network_data": network_data,
         "host_data": host_data,
     }
+
+
+async def _dump_and_hash_suspicious_processes(
+    ctx: Context,
+    dump_path: str,
+    host_data: dict,
+) -> list[dict]:
+    """Dump executables of processes with malfind hits and compute their hashes.
+
+    Uses ``pslist --pid <PID> --dump`` to extract the EXE image from memory,
+    then computes SHA256 + MD5 for each dumped file.  Results are returned as
+    a list of dicts ready to be stored in host_data.
+    """
+    import hashlib as _hashlib
+    import tempfile
+    import re as _re
+
+    # 1. Collect suspicious PIDs from malfind results
+    malfind_key = None
+    for k in host_data:
+        if "malfind" in k.lower():
+            malfind_key = k
+            break
+    if not malfind_key:
+        return []
+
+    malfind_data = host_data.get(malfind_key, [])
+    suspicious_pids: set[int] = set()
+    pid_process_map: dict[int, str] = {}
+    for entry in malfind_data:
+        pid = entry.get("PID") or entry.get("pid") or entry.get("Pid")
+        proc = entry.get("Process") or entry.get("name") or "unknown"
+        if pid is not None:
+            try:
+                pid_int = int(pid)
+                suspicious_pids.add(pid_int)
+                pid_process_map[pid_int] = str(proc)
+            except (ValueError, TypeError):
+                pass
+
+    if not suspicious_pids:
+        return []
+
+    await ctx.info(
+        f"Dumping executables for {len(suspicious_pids)} suspicious PID(s): "
+        f"{sorted(suspicious_pids)}"
+    )
+
+    # 2. Dump each PID's executable
+    hash_results: list[dict] = []
+
+    with tempfile.TemporaryDirectory(prefix="procdump_") as tmp_dir:
+        for pid in sorted(suspicious_pids):
+            await ctx.info(f"  Dumping PID {pid} ({pid_process_map.get(pid, '?')})...")
+            result = await executor.run_plugin_with_output_dir(
+                dump_path=dump_path,
+                plugin="windows.pslist.PsList",
+                output_dir=tmp_dir,
+                args={"pid": pid, "dump": True},
+            )
+
+            if not result.success:
+                await ctx.warning(f"  PID {pid} dump failed: {result.error}")
+                continue
+
+            # 3. Find and hash dumped files
+            dumped_files = []
+            for row in (result.data or []):
+                if isinstance(row, dict) and "_dumped_files" in row:
+                    dumped_files = row["_dumped_files"]
+                    break
+
+            for fpath in dumped_files:
+                fp = Path(fpath)
+                if not fp.exists() or fp.stat().st_size == 0:
+                    continue
+
+                file_bytes = fp.read_bytes()
+                sha256 = _hashlib.sha256(file_bytes).hexdigest()
+                md5 = _hashlib.md5(file_bytes).hexdigest()
+                size = len(file_bytes)
+
+                # Check for MZ header
+                has_mz = file_bytes[:2] == b"MZ"
+
+                hash_results.append({
+                    "pid": pid,
+                    "process": pid_process_map.get(pid, "unknown"),
+                    "dumped_file": fp.name,
+                    "file_size": size,
+                    "sha256": sha256,
+                    "md5": md5,
+                    "has_mz_header": has_mz,
+                })
+
+                await ctx.info(
+                    f"  ✓ PID {pid}: {fp.name} "
+                    f"({size:,} bytes, MZ={'yes' if has_mz else 'no'}) "
+                    f"SHA256={sha256[:16]}..."
+                )
+
+    return hash_results
 
 
 def register_execution_tools(mcp: FastMCP):
